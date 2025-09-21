@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="AI-powered research proposal generator that helps academics create comprehensive, well-structured research proposals using advanced language models and intelligent agents">
+    <meta name="keywords" content="research proposal, academic writing, AI assistant, research paper, academic proposal generator, PhD, Masters, research methodology">
+    <title>Research Proposal Generator - AI Academic Writing Assistant</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='24' font-size='24'%3E🎓%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+    <!-- Background Shapes -->
+    <div class="background-shapes">
+        <div class="shape"></div>
+        <div class="shape"></div>
+        <div class="shape"></div>
+    </div>
+    <!-- Top Navigation Bar -->
+    <nav class="top-navbar">
+        <div class="navbar-brand">
+            <div class="logo">
+                <i class="fas fa-graduation-cap"></i>
+                <span>Research Assistant</span>
+            </div>
+        </div>
+        <div class="navbar-controls">
+            <div class="connection-status-nav">
+                <div class="connection-indicator">
+                    <i class="fas fa-circle" id="connectionIconNav"></i>
+                    <span id="connectionTextNav">Access key required</span>
+                </div>
+            </div>
+            <div class="settings-dropdown-container">
+                <button class="settings-btn btn-ripple" id="settingsBtn">
+                    <i class="fas fa-cog"></i>
+                    <span>Settings</span>
+                </button>
+                <div class="settings-dropdown" id="settingsDropdown">
+                    <div class="setting-group">
+                        <label for="accessKeyInput">Access Key</label>
+                        <div class="access-key-container">
+                            <input 
+                                type="password" 
+                                id="accessKeyInput" 
+                                class="access-key-input" 
+                                placeholder="Enter your access key"
+                            >
+                            <button class="verify-key-btn btn-ripple" id="verifyKeyBtn">
+                                <i class="fas fa-key"></i>
+                            </button>
+                        </div>
+                        <div class="access-status" id="accessStatus">
+                            <i class="fas fa-lock" id="accessIcon"></i>
+                            <span id="accessText">Access key required</span>
+                        </div>
+                    </div>
+                    <div class="setting-group" id="modelGroup">
+                        <label for="modelSelect">AI Model</label>
+                        <select id="modelSelect" class="model-select" disabled>
+                            <option value="ollama" selected>Ollama (Local Model)</option>
+                            <option value="gemini">Google Gemini (Cloud)</option>
+                            <option value="openai">OpenAI GPT (Cloud)</option>
+                        </select>
+                    </div>
+                    <div class="setting-group" id="connectionGroup">
+                        <label>Connection Test</label>
+                        <button class="test-connection-btn btn-ripple" id="testConnectionBtn" disabled>
+                            <i class="fas fa-plug"></i> Test Connection
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Container -->
+    <div class="chat-container">
+        <!-- Chat Area -->
+        <div class="chat-area">
+            <!-- Welcome Screen -->
+            <div class="welcome-screen" id="welcomeScreen">
+                <div class="welcome-content">
+                    <div class="welcome-icon">
+                        <i class="fas fa-robot"></i>
+                    </div>
+                    <h2>Research Proposal Generator</h2>
+                    <p>Generate comprehensive, creative, well-structured research proposals based on the latest literature using advanced LLM agents.</p>
+                    <div class="example-prompts">
+                        <h3>Examples you can try:</h3>
+                        <div class="example-item" onclick="fillPrompt('Chloride-induced corrosion in reinforced concrete structures: Prevention and mitigation strategies')">
+                            "Chloride-induced corrosion in reinforced concrete structures: Prevention and mitigation strategies"
+                        </div>
+                        <div class="example-item" onclick="fillPrompt('Carbonation effects on concrete durability in urban environments: Long-term performance evaluation')">
+                            "Carbonation effects on concrete durability in urban environments: Long-term performance evaluation"
+                        </div>
+                        <div class="example-item" onclick="fillPrompt('Self-healing concrete technologies for enhanced durability and service life extension')">
+                            "Self-healing concrete technologies for enhanced durability and service life extension"
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Chat Messages -->
+            <div class="chat-messages" id="chatMessages">
+                <!-- Messages will be dynamically added here -->
+            </div>
+
+            <!-- Status Display -->
+            <div class="status-display" id="statusDisplay" style="display: none;">
+                <div class="status-content">
+                    <div class="status-icon">
+                        <i class="fas fa-cog fa-spin"></i>
+                    </div>
+                    <div class="status-text">
+                        <div class="status-message" id="statusMessage">Initializing...</div>
+                        <div class="status-details" id="statusDetails"></div>
+                    </div>
+                </div>
+                <div class="status-progress" id="statusProgress">
+                    <div class="progress-bar" id="progressBar"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Input Area -->
+        <div class="chat-input-area">
+            <div class="input-container">
+                <textarea 
+                    id="messageInput" 
+                    placeholder="Enter access key in settings first..."
+                    rows="1"
+                    class="message-input"
+                    disabled
+                ></textarea>
+                <button class="send-btn btn-ripple" id="sendBtn" disabled>
+                    <i class="fas fa-paper-plane"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay" style="display: none;">
+        <div class="loading-content">
+            <div class="spinner"></div>
+            <p>Generating your research proposal...</p>
+            <div class="loading-steps" id="loadingSteps">
+                <!-- Progress steps will be shown here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Error Modal -->
+    <div class="modal-overlay" id="errorModal" style="display: none;">
+        <div class="modal">
+            <div class="modal-header">
+                <h3><i class="fas fa-exclamation-triangle"></i> Error</h3>
+                <button class="close-btn" id="closeErrorModal">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p id="errorMessage">An error occurred</p>
+            </div>
+            <div class="modal-actions">
+                <button class="action-btn" id="retryBtn">
+                    <i class="fas fa-redo"></i> Retry
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
