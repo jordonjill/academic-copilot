@@ -1,40 +1,5 @@
 from langchain_core.prompts import PromptTemplate
 
-# PLANNER_PROMPT_TEMPLATE = """
-# You are an expert research planner. Your role is to determine the next step in a research process.
-
-# You will be given the initial research topic and the content of currently available resources.
-# Your task is to decide if there is enough information to proceed to the synthesis stage, where research gaps and ideas are generated.
-
-# **Current Research Topic:**
-# {initial_topic}
-
-# **Available Resources:**
-# {retrieved_resources}
-
-# **Your Decision Process:**
-# 1.  Review the topic and the content of the resources.
-# 2.  If the resources are empty or clearly insufficient to understand the topic's landscape, you must decide to 'search'.
-# 3.  If you decide to 'search', you must generate a specific and effective search query to find more relevant information. The query should be targeted to fill the most obvious gaps.
-# 4.  If the resources provide a good overview of the topic, containing multiple perspectives, definitions, and discussions, you should decide to 'synthesize'.
-
-# **Output Format:**
-# You must respond with a JSON object that strictly follows this Pydantic model:
-# class ResearchPlan(BaseModel):
-#     has_enough_content: bool
-#     step_type: Literal["search", "synthesize"]
-#     query: Optional[str]
-
-# **Example Scenarios:**
-# - If resources are empty, your output should be something like:
-#   {{"has_enough_content": false, "step_type": "search", "query": "What is the current state of [initial_topic]?"}}
-
-# - If resources are rich and detailed, your output should be:
-#   {{"has_enough_content": true, "step_type": "synthesize", "query": null}}
-
-# Now, make your decision based on the provided information.
-# """
-
 PLANNER_PROMPT_TEMPLATE = """
 You are a meticulous and strategic AI Research Planner. Your primary function is to guide an autonomous research process by determining the most logical next step.
 
@@ -104,46 +69,6 @@ Analyze and provide your decision in the specified JSON format.
 """
 
 
-# SYNTHESIZER_PROMPT_TEMPLATE = """
-# You are an expert academic researcher and strategist, skilled at identifying novel insights from a body of literature.
-
-# Your task is to analyze the provided research materials on a given topic to identify a research gap and propose a concrete research idea.
-
-# **Current Research Topic:**
-# {initial_topic}
-
-# **Available Research Materials:**
-# {retrieved_resources}
-
-# {feedback_section}
-
-# **Your Analysis and Generation Process:**
-# 1.  **Identify the Research Gap:** Carefully read through all the materials. Synthesize the information to find a specific, unaddressed, or under-explored area. The gap should be a logical conclusion drawn from the materials, not a random guess. It should answer the question: "Based on what we know, what crucial thing do we NOT know?"
-# 2.  **Propose a Research Idea:** Formulate a clear and innovative research idea to address the gap you identified. This idea must be structured with a title and a sequence of concrete implementation steps. The steps should be a high-level plan (e.g., "1. Conduct a systematic literature review...", "2. Develop a machine learning model based on X...", "3. Validate the model using Y dataset...").
-
-# **Output Format:**
-# You MUST respond with a JSON object that strictly follows this Pydantic model structure. Do not add any extra explanations or text outside the JSON object.
-
-# class ResearchCreation(BaseModel):
-#     research_gap: str
-#     research_idea: str
-
-# **Example Output:**
-# {{
-#     "research_gap": "While most research focuses on using AI for crop yield prediction, there is a significant lack of studies on using AI to optimize water usage in response to real-time soil and weather data.",
-#     "research_idea": {{
-#         "title: Development of a Real-Time, AI-Powered Irrigation System for Precision Agriculture,
-#         steps: 
-#             1. Develop and deploy a sensor network to collect real-time soil moisture, temperature, and local weather data.,
-#             2. Train a recurrent neural network (RNN) model to predict near-term water requirements based on the collected sensor data.,
-#             3. Integrate the model with an automated irrigation system to control water distribution based on the model's predictions.,
-#             4. Conduct a comparative field study to evaluate the system's effectiveness in water conservation and crop health against traditional irrigation methods."
-#     }}
-# }}
-
-# Now, perform your analysis on the provided topic and resources and generate the JSON output.
-# """
-
 SYNTHESIZER_PROMPT_TEMPLATE = """
 You are an expert academic researcher and strategist, skilled at identifying novel insights from a body of literature. 
 
@@ -182,24 +107,6 @@ Now, perform your analysis on the provided topic, resources, feedback and genera
 
 """
 
-# CRITIC_QUERY_GENERATION_PROMPT_TEMPLATE = """
-# You are a skeptical academic reviewer. You have been given a research idea and your goal is to find evidence that challenges its novelty or feasibility.
-
-# **Research Idea:**
-# {research_idea}
-
-# **Task:**
-# Generate a single, concise, and effective search query that is most likely to find existing work, prior art, or evidence that refutes the claims of the proposed research idea. Focus on the core concepts and contributions.
-
-# **CRITICAL INSTRUCTION:**
-# You MUST respond with ONLY the raw search query string and nothing else. Do not add any explanations, introductory text, or formatting.
-
-# **Example:**
-# - Input Idea: "Using llama3 for real-time stock prediction"
-# - Your Output: "llama3 stock prediction real-time"
-
-# **Search Query:**
-# """
 
 CRITIC_QUERY_GENERATION_PROMPT_TEMPLATE = """
 You are a highly critical and skeptical academic reviewer. Your singular goal is to find evidence that challenges the novelty or feasibility of a given research idea. You are an expert at crafting search queries that uncover weaknesses, limitations, and contradictory prior art.
@@ -231,40 +138,6 @@ You MUST respond with ONLY the raw search query string and nothing else. No expl
 **Search Query:**
 """
 
-# CRITIC_EVALUATION_PROMPT_TEMPLATE = """
-# You are a meticulous and fair academic reviewer. Your task is to evaluate a research idea based on newly retrieved search results.
-
-# **Original Research Idea:**
-# {research_idea}
-
-# **Newly Retrieved Search Results that may challenge the idea:**
-# {search_results}
-
-# **Your Evaluation Process:**
-# 1.  **Assess Novelty:** Carefully compare the research idea with the search results. Does existing work already cover the core contribution of this idea? Is the idea truly new, or just an incremental change?
-# 2.  **Assess Feasibility:** Based on the search results, are there any obvious technical or methodological flaws that would make the idea impractical or impossible to implement?
-# 3.  **Make a Decision:**
-#     - If the idea is not novel or not feasible, you must rule it as **invalid**.
-#     - If the idea is novel and appears feasible despite the challenging evidence, you must rule it as **valid**.
-
-# **Provide Feedback:**
-# - If you rule the idea as **invalid**, you MUST provide specific, constructive feedback. Explain EXACTLY what you found in the search results that led to your decision. Point to specific prior art or challenges.
-# - If you rule the idea as **valid**, the feedback can be a short confirmation like "The idea stands up to scrutiny."
-
-# **Output Format:**
-# You MUST respond with a JSON object that strictly follows this Pydantic model:
-# class ResearchCritic(BaseModel):
-#     is_valid: bool
-#     feedback: Optional[str]
-
-# **Example Outputs:**
-# - If the idea is valid:
-#   {{"is_valid": true, "feedback": "The idea stands up to scrutiny."}}
-# - If the idea is invalid:
-#   {{"is_valid": false, "feedback": "Prior work already covers this idea, see [reference]."}}
-
-# Now, perform your evaluation and generate the JSON output.
-# """
 
 CRITIC_EVALUATION_PROMPT_TEMPLATE = """
 You are a meticulous and fair-minded academic reviewer. Your task is to provide a rigorous and constructive evaluation of a research idea, considering the newly retrieved search results that may challenge it.
