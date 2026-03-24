@@ -1,12 +1,12 @@
 from typing import Dict
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.output_parsers.string import StrOutputParser
-from src.state import GraphState, ResearchCritic, Resource
+from src.state import GlobalState, ResearchCritic, Resource
 from src.tools import crawl_search
 from src.config.prompt import CRITIC_QUERY_GENERATION_PROMPT, CRITIC_EVALUATION_PROMPT
 from src.config.config import MAX_SEARCHES, MAX_VALIDATION_ATTEMPTS
 
-def critic_node(state: GraphState, llm: BaseLanguageModel) -> Dict:
+def critic_node(state: GlobalState, llm: BaseLanguageModel) -> Dict:
 
     idea_validation_attempts = state.get("idea_validation_attempts", 0) + 1
     if idea_validation_attempts > MAX_VALIDATION_ATTEMPTS:
@@ -45,9 +45,6 @@ def critic_node(state: GraphState, llm: BaseLanguageModel) -> Dict:
             except Exception as e:
                 print(f"[!] Warning: Could not create Resource object from data: {result}. Error: {e}")
 
-    existing_resources = state.get("retrieved_resources", [])
-    all_resources = existing_resources + new_resources
-
     search_count = search_count + 1
     eval_chain = CRITIC_EVALUATION_PROMPT | llm.with_structured_output(ResearchCritic)
 
@@ -60,9 +57,10 @@ def critic_node(state: GraphState, llm: BaseLanguageModel) -> Dict:
         "search_results": search_resources if new_resources else "No new results found."
     })
 
+    # operator.add reducer: 仅返回新增资源
     return {
         "research_critic": research_critic,
-        "retrieved_resources": all_resources,
+        "retrieved_resources": new_resources,
         "idea_validation_attempts": idea_validation_attempts,
         "search_count": search_count,
     }

@@ -1,38 +1,30 @@
 from typing import Dict
 from langchain_core.language_models import BaseLanguageModel
-from src.state import GraphState, FinalProposal
-from src.config.prompt import REPORTER_PROMPT
+from src.state import GlobalState as GraphState
+from src.agents.factory import build_reporter
+
 
 def reporter_node(state: GraphState, llm: BaseLanguageModel) -> Dict:
-    
-    research_critic = state.get("research_critic")
-    if not state.get("research_creation") or not research_critic or not research_critic.is_valid:
-        raise ValueError("Reporter node should only be called after a research idea has been validated.")
+    critic = state.get("research_critic")
+    if not state.get("research_creation") or not critic or not critic.is_valid:
+        raise ValueError("Reporter called before idea validation.")
 
-    initial_topic = state["initial_topic"]
-    research_creation = state["research_creation"]
-    research_gap = research_creation.research_gap
-    research_idea = research_creation.research_idea
-    original_resources = state["retrieved_resources"]
-    research_critic = state["research_critic"]
-    feedback_section = research_critic.feedback
-    all_resources = "\n\n---\n\n".join(
-        [f"Source {i+1}:\nURI: {r.uri}\nTitle: {r.title}\nAbstract: {r.content}" for i, r in enumerate(original_resources)]
+    creation = state["research_creation"]
+    resources = state["retrieved_resources"]
+    all_resources_text = "\n\n---\n\n".join(
+        [f"Source {i+1}:\nURI: {r.uri}\nTitle: {r.title}\nAbstract: {r.content}"
+         for i, r in enumerate(resources)]
     )
 
-    reporter_chain = REPORTER_PROMPT | llm.with_structured_output(FinalProposal)
-    
-    final_proposal = reporter_chain.invoke({
-        "initial_topic": initial_topic,
-        "research_gap": research_gap,
-        "research_idea": research_idea,
-        "feedback_section": feedback_section,
-        "all_resources": all_resources
+    chain = build_reporter(llm)
+    final_proposal = chain.invoke({
+        "initial_topic": state["initial_topic"],
+        "research_gap": creation.research_gap,
+        "research_idea": creation.research_idea,
+        "feedback_section": critic.feedback or "",
+        "all_resources": all_resources_text,
     })
 
-    # Always override with correct references from resources
-    final_proposal.References = [{"title": r.title, "uri": r.uri} for r in original_resources]
-
-    return {
-        "final_proposal": final_proposal,
-    }
+    # 覆盖参考文献确保准确
+    final_proposal.References = [{"title": r.title, "uri": r.uri} for r in resources]
+    return {"final_proposal": final_proposal}

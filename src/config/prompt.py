@@ -254,3 +254,105 @@ CRITIC_EVALUATION_PROMPT = PromptTemplate.from_template(CRITIC_EVALUATION_PROMPT
 PLANNER_PROMPT = PromptTemplate.from_template(PLANNER_PROMPT_TEMPLATE)
 SYNTHESIZER_PROMPT = PromptTemplate.from_template(SYNTHESIZER_PROMPT_TEMPLATE)
 REPORTER_PROMPT = PromptTemplate.from_template(REPORTER_PROMPT_TEMPLATE)
+
+# =============================================================
+# Supervisor 意图分类 Prompt
+# =============================================================
+
+SUPERVISOR_PROMPT_TEMPLATE = """
+You are the Supervisor of an Academic Copilot multi-agent system. Your ONLY task is to classify the user's intent and extract a clean workflow topic.
+
+## User Profile (Long-Term Memory)
+{user_profile_summary}
+
+## Recent Conversation (last 5 turns)
+{recent_conversation}
+
+## Latest User Message
+{latest_message}
+
+## Intent Classification Rules
+
+| Condition | Intent |
+|---|---|
+| User asks to write/generate a research proposal | PROPOSAL_GEN |
+| User asks to write a survey/review/literature review | SURVEY_WRITE |
+| User is chatting, greeting, or asking general questions | CHITCHAT |
+| Intent is ambiguous or missing key information | CLARIFY_NEEDED |
+
+## Output Format
+You MUST respond with a JSON object matching this Pydantic model exactly:
+
+class IntentClassification(BaseModel):
+    intent: Literal["CHITCHAT", "PROPOSAL_GEN", "SURVEY_WRITE", "CLARIFY_NEEDED"]
+    confidence: float  # 0.0 to 1.0
+    workflow_topic: Optional[str]  # Core topic ONLY (strip filler words like "帮我", "写一篇", "a", "the"). Set to null for CHITCHAT.
+    clarification_question: Optional[str]  # Only for CLARIFY_NEEDED
+
+**Examples:**
+- "帮我写一个关于大模型在土木工程中的应用的研究提案" → {{"intent": "PROPOSAL_GEN", "confidence": 0.98, "workflow_topic": "大模型在土木工程中的应用", "clarification_question": null}}
+- "写一篇量子计算综述" → {{"intent": "SURVEY_WRITE", "confidence": 0.95, "workflow_topic": "量子计算", "clarification_question": null}}
+- "你好，你是什么系统？" → {{"intent": "CHITCHAT", "confidence": 0.99, "workflow_topic": null, "clarification_question": null}}
+- "帮我研究一下" → {{"intent": "CLARIFY_NEEDED", "confidence": 0.9, "workflow_topic": null, "clarification_question": "请问您希望研究哪个具体领域或主题？"}}
+
+Now classify the latest user message:
+"""
+
+SUPERVISOR_PROMPT = PromptTemplate.from_template(SUPERVISOR_PROMPT_TEMPLATE)
+
+
+# =============================================================
+# STM 压缩 Prompt
+# =============================================================
+
+STM_COMPRESSION_PROMPT_TEMPLATE = """
+You are a conversation summarizer for an Academic Copilot system. Compress the following conversation history into a concise summary that preserves all critical academic context.
+
+## Conversation to Compress
+{conversation_to_compress}
+
+## Compression Requirements
+1. Preserve: research topics discussed, key findings, user preferences, decisions made
+2. Preserve: any specific names, methods, tools, or datasets mentioned
+3. Discard: raw web search results, repetitive content, tool call details
+4. Format: Write as a flowing paragraph or structured bullet points
+5. Language: Match the language of the conversation (Chinese or English)
+6. Length: Maximum 500 tokens
+
+## Output
+Write ONLY the compressed summary. No preamble or explanation.
+"""
+
+STM_COMPRESSION_PROMPT = PromptTemplate.from_template(STM_COMPRESSION_PROMPT_TEMPLATE)
+
+
+# =============================================================
+# LTM 事实提取 Prompt
+# =============================================================
+
+LTM_EXTRACTION_PROMPT_TEMPLATE = """
+You are a fact extractor for an Academic Copilot's long-term memory system. Extract persistent facts about the user from this conversation.
+
+## Conversation Backbone
+{conversation_backbone}
+
+## Extraction Categories
+Extract facts into these 6 categories. Only include facts that are EXPLICITLY stated or clearly implied. Leave a list empty if no facts found.
+
+Output ONLY a valid JSON object with these exact keys:
+{{
+    "research_domains": [],        // Academic fields (e.g., "NLP", "Civil Engineering", "Quantum Computing")
+    "methodologies": [],           // Research methods (e.g., "Finite Element Analysis", "RAG", "Transformer")
+    "tools_and_frameworks": [],    // Specific tools (e.g., "LangChain", "PyTorch", "ABAQUS")
+    "past_topics": [],             // Research topics explored (e.g., "Urban Heat Island Effect mitigation using AI")
+    "writing_preferences": [],     // Writing style preferences (e.g., "prefers English abstracts", "uses IEEE format")
+    "custom_facts": []             // Other persistent facts about the user
+}}
+
+## Conversation to Analyze
+{conversation_backbone}
+
+Output only the JSON object, no other text.
+"""
+
+LTM_EXTRACTION_PROMPT = PromptTemplate.from_template(LTM_EXTRACTION_PROMPT_TEMPLATE)

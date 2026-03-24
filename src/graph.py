@@ -1,103 +1,102 @@
+"""
+Academic Copilot 主图（Supervisor 路由层）。
+
+拓扑：
+  supervisor
+      ├─ chitchat        → stm_compression → END
+      ├─ proposal_workflow → stm_compression → END
+      └─ survey_workflow   → stm_compression → END
+"""
+from __future__ import annotations
 from functools import partial
+
 from dotenv import load_dotenv
 from langchain_ollama.chat_models import ChatOllama
 from langchain.chat_models import init_chat_model
-from langgraph.graph import StateGraph
-from src.state import GraphState
-from src.agents import planner_node
-from src.agents import researcher_node
-from src.agents import synthesizer_node
-from src.agents import critic_node
-from src.agents import reporter_node
-load_dotenv() 
+from langgraph.graph import StateGraph, END
 
-llm = ChatOllama(model="llama3.1:8b", temperature=0)
-# llm = init_chat_model("gemini-2.5-flash", model_provider="google_genai")
+from src.state import GlobalState
+from src.agents.supervisor import supervisor_node, route_by_intent
+from src.agents.chitchat import chitchat_node
+from src.workflows.proposal_workflow import build_proposal_subgraph
+from src.workflows.survey_workflow import build_survey_subgraph
+from src.memory.stm import stm_compression_node
 
-planner = partial(planner_node, llm=llm)
-synthesizer = partial(synthesizer_node, llm=llm)
-critic = partial(critic_node, llm=llm)
-reporter = partial(reporter_node, llm=llm)
+load_dotenv()
 
-def route_planning(state: GraphState):
-    plan = state["research_plan"]
-    if plan.step_type == "search":
-        return "researcher"
-    elif plan.step_type == "synthesize":
-        return "synthesizer"
 
-def route_critic(state: GraphState):
-    if state["research_critic"].is_valid:
-        return "reporter"
-    else:
-        return "synthesizer"
+def build_main_graph(llm):
+    """构建并编译 Supervisor 主图。"""
+    # --- Sub-graphs ---
+    proposal_subgraph = build_proposal_subgraph(llm)
+    survey_subgraph = build_survey_subgraph(llm)
 
-graph_builder = StateGraph(GraphState)
+    # --- 绑定 LLM 的节点 ---
+    supervisor = partial(supervisor_node, llm=llm)
+    chitchat = partial(chitchat_node, llm=llm)
+    stm_compress = partial(stm_compression_node, llm=llm)
 
-graph_builder.add_node("planner", planner)
-graph_builder.add_node("researcher", researcher_node)
-graph_builder.add_node("synthesizer", synthesizer)
-graph_builder.add_node("critic", critic)
-graph_builder.add_node("reporter", reporter)
+    builder = StateGraph(GlobalState)
 
-graph_builder.set_entry_point("planner")
-graph_builder.add_edge("researcher", "planner") 
-graph_builder.add_edge("synthesizer", "critic")
+    builder.add_node("supervisor", supervisor)
+    builder.add_node("chitchat", chitchat)
+    builder.add_node("proposal_workflow", proposal_subgraph)
+    builder.add_node("survey_workflow", survey_subgraph)
+    builder.add_node("stm_compression", stm_compress)
 
-graph_builder.add_conditional_edges(
-    "planner",
-    route_planning,
-    {
-        "researcher": "researcher",
-        "synthesizer": "synthesizer"
-    }
-)
+    builder.set_entry_point("supervisor")
 
-graph_builder.add_conditional_edges(
-    "critic",
-    route_critic,
-    {
-        "synthesizer": "synthesizer",
-        "reporter": "reporter"
-    }
-)
+    builder.add_conditional_edges(
+        "supervisor",
+        route_by_intent,
+        {
+            "chitchat": "chitchat",
+            "proposal_workflow": "proposal_workflow",
+            "survey_workflow": "survey_workflow",
+        },
+    )
 
-graph_builder.set_finish_point("reporter")
+    # 所有路径收敛到 stm_compression
+    for node in ["chitchat", "proposal_workflow", "survey_workflow"]:
+        builder.add_edge(node, "stm_compression")
 
-app = graph_builder.compile()
+    builder.add_edge("stm_compression", END)
+
+    return builder.compile()
+
+
+# ── 默认实例（向后兼容 src/graph.py 被直接导入的场景）──
+_llm = ChatOllama(model="llama3.1:8b", temperature=0)
+# _llm = init_chat_model("gemini-2.5-flash", model_provider="google_genai")
+
+app = build_main_graph(_llm)
+
 
 if __name__ == "__main__":
-    initial_topic = "Using AI to mitigate urban heat island effect"
+    from langchain_core.messages import HumanMessage
+    import uuid
 
-    inputs = {"initial_topic": initial_topic}
+    result = app.invoke({
+        "messages": [HumanMessage(content="帮我写一个关于大模型在土木工程中的应用的研究提案")],
+        "user_id": "default",
+        "user_profile": None,
+        "current_intent": None,
+        "workflow_status": "idle",
+        "collected_materials": [],
+        "retrieved_resources": [],
+        "current_draft_sections": None,
+        "final_output": None,
+        "initial_topic": None,
+        "research_plan": None,
+        "research_creation": None,
+        "research_critic": None,
+        "idea_validation_attempts": 0,
+        "search_count": 0,
+        "final_proposal": None,
+        "session_id": str(uuid.uuid4()),
+        "stm_token_count": 0,
+        "stm_compressed": False,
+        "ltm_extraction_done": False,
+    }, {"recursion_limit": 25})
 
-    final_state = None
-    final_proposal = None
-
-    for step in app.stream(inputs, {"recursion_limit": 15}):
-        node_name, output = next(iter(step.items()))
-        print(f"\n--- Executed Node: {node_name} ---")
-        final_state = step
-    
-    if final_state:
-        last_output = next(iter(final_state.values()))
-        final_proposal = last_output.get("final_proposal")
-    else:
-        final_proposal = None
-
-    if final_proposal:
-        print("\n\n--- FINAL RESEARCH PROPOSAL ---")
-        print(f"Title: {final_proposal.Title}")
-        print("\nIntroduction:")
-        print(final_proposal.Introduction)
-        print("\nProblem Statement:")
-        print(final_proposal.ResearchProblem)
-        print("\nMethodology:")
-        print(final_proposal.Methodology)
-        print("\nExpected Outcomes:")
-        print(final_proposal.ExpectedOutcomes)
-        print("\nReferences:")
-        for ref in final_proposal.References:
-            print(f"- {ref['title']}: {ref['uri']}")
-    else:
-        print("\n\n--- PROCESS FINISHED WITHOUT A FINAL PROPOSAL ---")
+    print("Final proposal:", result.get("final_proposal"))

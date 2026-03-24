@@ -1,5 +1,7 @@
 from .schema import (
-    GraphState,
+    GlobalState,
+    UserProfile,
+    IntentClassification,
     ResearchPlan,
     Resource,
     ResearchCreation,
@@ -7,8 +9,14 @@ from .schema import (
     FinalProposal,
 )
 
+# 向后兼容别名
+GraphState = GlobalState
+
 __all__ = [
+    "GlobalState",
     "GraphState",
+    "UserProfile",
+    "IntentClassification",
     "ResearchPlan",
     "Resource",
     "ResearchCreation",
