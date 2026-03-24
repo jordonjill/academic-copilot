@@ -1,0 +1,34 @@
+version: "1.0"
+
+servers:
+  filesystem:
+    transport: stdio
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/jordon/papers"]
+    enabled: true
+
+  zotero:
+    transport: stdio
+    command: "python"
+    args: ["-m", "src.infrastructure.tools.zotero_mcp_server"]
+    env:
+      ZOTERO_API_KEY: "${ZOTERO_API_KEY}"
+    enabled: false   # 默认关闭，配置 ZOTERO_API_KEY 后启用
+
+  arxiv:
+    transport: "internal"   # 内置工具，不走 MCP 协议
+    module: "src.infrastructure.tools.arxiv_search"
+    enabled: true
+
+  web_search:
+    transport: "internal"   # 内置工具，不走 MCP 协议
+    module: "src.infrastructure.tools.crawl_search"
+    enabled: true
+
+# 角色→服务器映射（MCPToolRegistry.ROLE_DEFAULT_SERVERS）
+role_tools:
+  researcher: [arxiv, web_search, zotero, filesystem]
+  critic: [arxiv, web_search]
+  writer: [filesystem]
+  planner: []
+  chitchat: []
