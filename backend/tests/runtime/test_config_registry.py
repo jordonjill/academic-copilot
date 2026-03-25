@@ -255,3 +255,210 @@ def test_registry_reload_increments_and_replaces_state(tmp_path):
     assert second["config_version"] == 2
     assert registry.agents["planner_proposal"].name == "Updated Planner"
     assert "extra_agent" in registry.agents
+
+
+def test_registry_survives_oserror(tmp_path, monkeypatch):
+    config_root = tmp_path / "config"
+    agents_dir = config_root / "agents"
+    workflows_dir = config_root / "workflows"
+    agents_dir.mkdir(parents=True)
+    workflows_dir.mkdir(parents=True)
+
+    (agents_dir / "planner.yaml").write_text(
+        "\n".join(
+            [
+                "id: planner_proposal",
+                "name: Proposal Planner",
+                "mode: chain",
+                "system_prompt: |",
+                "  Decide whether to search for sources or synthesize findings.",
+                "tools: []",
+                "llm:",
+                "  provider: openai",
+                "  model: gpt-4o-mini",
+                "  temperature: 0.0",
+            ]
+        )
+    )
+    (agents_dir / "bad_io.yaml").write_text("id: bad_io_agent")
+    (workflows_dir / "proposal_v2.yaml").write_text(
+        "\n".join(
+            [
+                "id: proposal_v2",
+                "name: Proposal v2",
+                "entry_node: planner",
+                "nodes:",
+                "  planner:",
+                "    type: agent",
+                "    agent_id: planner_proposal",
+                "  end:",
+                "    type: terminal",
+                "edges:",
+                "  - from: planner",
+                "    to: end",
+            ]
+        )
+    )
+
+    registry = ConfigRegistry(config_root=config_root)
+
+    original_load = registry._load_yaml
+
+    def fail_on_bad_io(path):
+        if path.name == "bad_io.yaml":
+            raise OSError("read failed")
+        return original_load(path)
+
+    monkeypatch.setattr(registry, "_load_yaml", fail_on_bad_io)
+
+    report = registry.reload()
+    assert "planner_proposal" in report["loaded_agents"]
+    assert any(
+        failure.get("type") == "agent"
+        and "bad_io.yaml" in failure.get("path", "")
+        for failure in report["failed_objects"]
+    )
+
+
+def test_registry_duplicate_id_rejected(tmp_path):
+    config_root = tmp_path / "config"
+    agents_dir = config_root / "agents"
+    workflows_dir = config_root / "workflows"
+    agents_dir.mkdir(parents=True)
+    workflows_dir.mkdir(parents=True)
+
+    (agents_dir / "dup_a.yaml").write_text(
+        "\n".join(
+            [
+                "id: duplicate_agent",
+                "name: First Agent",
+                "mode: chain",
+                "system_prompt: |",
+                "  First version.",
+                "tools: []",
+                "llm:",
+                "  provider: openai",
+                "  model: gpt-4o-mini",
+                "  temperature: 0.0",
+            ]
+        )
+    )
+    (agents_dir / "dup_b.yaml").write_text(
+        "\n".join(
+            [
+                "id: duplicate_agent",
+                "name: Second Agent",
+                "mode: chain",
+                "system_prompt: |",
+                "  Second version.",
+                "tools: []",
+                "llm:",
+                "  provider: openai",
+                "  model: gpt-4o-mini",
+                "  temperature: 0.0",
+            ]
+        )
+    )
+    (workflows_dir / "proposal_v2.yaml").write_text(
+        "\n".join(
+            [
+                "id: proposal_v2",
+                "name: Proposal v2",
+                "entry_node: planner",
+                "nodes:",
+                "  planner:",
+                "    type: agent",
+                "    agent_id: duplicate_agent",
+                "  end:",
+                "    type: terminal",
+                "edges:",
+                "  - from: planner",
+                "    to: end",
+            ]
+        )
+    )
+
+    registry = ConfigRegistry(config_root=config_root)
+    report = registry.reload()
+    assert "duplicate_agent" not in report["loaded_agents"]
+    assert any(
+        failure.get("type") == "agent"
+        and "dup_a.yaml" in failure.get("path", "")
+        for failure in report["failed_objects"]
+    )
+    assert any(
+        failure.get("type") == "agent"
+        and "dup_b.yaml" in failure.get("path", "")
+        for failure in report["failed_objects"]
+    )
+
+
+def test_registry_preserves_last_known_good(tmp_path):
+    config_root = tmp_path / "config"
+    agents_dir = config_root / "agents"
+    workflows_dir = config_root / "workflows"
+    agents_dir.mkdir(parents=True)
+    workflows_dir.mkdir(parents=True)
+
+    agent_path = agents_dir / "planner.yaml"
+    agent_path.write_text(
+        "\n".join(
+            [
+                "id: planner_proposal",
+                "name: Proposal Planner",
+                "mode: chain",
+                "system_prompt: |",
+                "  Decide whether to search for sources or synthesize findings.",
+                "tools: []",
+                "llm:",
+                "  provider: openai",
+                "  model: gpt-4o-mini",
+                "  temperature: 0.0",
+            ]
+        )
+    )
+    (workflows_dir / "proposal_v2.yaml").write_text(
+        "\n".join(
+            [
+                "id: proposal_v2",
+                "name: Proposal v2",
+                "entry_node: planner",
+                "nodes:",
+                "  planner:",
+                "    type: agent",
+                "    agent_id: planner_proposal",
+                "  end:",
+                "    type: terminal",
+                "edges:",
+                "  - from: planner",
+                "    to: end",
+            ]
+        )
+    )
+
+    registry = ConfigRegistry(config_root=config_root)
+    first = registry.reload()
+    assert "planner_proposal" in first["loaded_agents"]
+    assert registry.agents["planner_proposal"].name == "Proposal Planner"
+
+    agent_path.write_text(
+        "\n".join(
+            [
+                "id: planner_proposal",
+                "mode: chain",
+                "system_prompt: invalid now",
+                "llm:",
+                "  provider: openai",
+                "  model: gpt-4o-mini",
+            ]
+        )
+    )
+
+    second = registry.reload()
+    assert "planner_proposal" in second["loaded_agents"]
+    assert registry.agents["planner_proposal"].name == "Proposal Planner"
+    assert any(
+        failure.get("type") == "agent"
+        and "planner.yaml" in failure.get("path", "")
+        for failure in second["failed_objects"]
+    )
