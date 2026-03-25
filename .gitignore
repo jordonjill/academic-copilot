@@ -5,3 +5,4 @@ __pycache__/
 backend/.env
 backend/.venv
 backend/data/
+.worktrees/
