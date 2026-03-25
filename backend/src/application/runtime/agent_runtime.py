@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Callable, List
+from typing import Any, Callable, List
 
 from langchain_core.language_models import BaseLanguageModel
+from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 
 from src.application.agents import AgentMode, create_subagent
@@ -15,7 +16,7 @@ def build_agent_from_spec(
     spec: AgentSpec,
     llm: BaseLanguageModel,
     tool_resolver: ToolResolver,
-):
+) -> Runnable | Any:
     tools: List[BaseTool] = [tool_resolver(tool_id) for tool_id in spec.tools]
 
     if spec.mode == "chain":
