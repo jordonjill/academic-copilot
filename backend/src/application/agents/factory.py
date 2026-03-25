@@ -176,7 +176,7 @@ def build_writer(
     """
     if tools is None:
         from src.infrastructure.tools.registry import get_tools, ToolGroup
-        tools = get_tools(ToolGroup.FILESYSTEM)  # 运行时注入的 MCP 文件工具
+        tools = get_tools(ToolGroup.WRITER)  # filesystem + export tools
     return create_subagent(AgentMode.REACT, llm, prompt=_WRITER_SYSTEM, tools=tools, name="writer")
 
 

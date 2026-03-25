@@ -35,7 +35,7 @@ class ToolGroup(str, Enum):
 
 
 # 运行时 MCP 工具存储（由 inject_mcp_tools() 填充）
-_mcp_registry: dict[str, List[BaseTool]] = {
+_mcp_registry: dict[ToolGroup, List[BaseTool]] = {
     ToolGroup.FILESYSTEM: [],
 }
 
