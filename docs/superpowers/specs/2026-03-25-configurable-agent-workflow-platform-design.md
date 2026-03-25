@@ -202,6 +202,18 @@ Priority order:
 4. On user acceptance: run selected workflow
 5. On user rejection: switch to dynamic supervisor orchestration mode
 
+Confirmation protocol (required for deterministic implementation):
+
+- Workflow suggestion response must be structured as `type=workflow_suggestion` with:
+  - `session_id`
+  - `suggested_workflow_id`
+  - `question`
+  - `expires_in_turns` (default 2)
+- Confirmation replies are interpreted only when `pending_workflow_confirmation=true`
+- Accepted reply examples: `yes`, `use workflow`, `使用`
+- Rejected reply examples: `no`, `don't use`, `不使用`
+- If suggestion expires without confirmation, runtime falls back to dynamic mode
+
 ## 5.2 New Conversation State Fields
 
 Add to global state:
@@ -210,6 +222,7 @@ Add to global state:
 - `suggested_workflow_id: Optional[str]`
 - `orchestration_mode: Literal["workflow", "dynamic"]`
 - `selected_subagents: List[str]` (execution trace)
+- `confirmation_expires_at_turn: Optional[int]`
 
 ## 5.3 Dynamic Mode (No Explicit Workflow)
 
@@ -219,6 +232,10 @@ When user rejects suggested workflow:
 - Subagent selection depends on intent, current artifacts, and failure signals
 - No static workflow graph is disclosed to user
 - Execution trace is logged for observability and debugging
+- Runtime guardrails apply:
+  - `dynamic_max_substeps` (default 8)
+  - `dynamic_idle_limit` (default 2 consecutive no-progress turns)
+  - On guardrail breach: return structured clarification prompt to user
 
 ## 6. Memory Strategy (Aligned with Requirements)
 
@@ -294,11 +311,19 @@ Persist extracted facts with provenance:
 - `loaded_workflows`
 - `failed_objects`
 
+`POST /chat` response extension for workflow suggestion:
+
+- `type: "workflow_suggestion"`
+- `message`: confirmation question
+- `data.suggested_workflow_id`
+- `data.expires_in_turns`
+
 ## 8.2 Backward Compatibility
 
 - Existing proposal/survey/chat behavior remains available during migration
 - Legacy hardcoded graph can coexist behind compatibility path
 - `proposal_v2` is introduced incrementally and made default only after verification
+- Existing clients that do not handle `type=workflow_suggestion` should still receive a human-readable `message`
 
 ## 9. Testing and Acceptance Criteria
 
@@ -361,7 +386,6 @@ Phase 5: Stabilization
 ## 11. Open Decisions Deferred to Implementation Plan
 
 - Exact expression format for edge conditions (`route_key` vs expression DSL)
-- First batch and order of new academic tools to implement concretely
+- First batch and order of new academic tools to implement concretely (MVP minimum: implement at least two adapters beyond existing `web_search` and `arxiv_search`; others may be staged)
 - Whether `proposal_v2` immediately replaces old proposal workflow in default routing
 - Detailed dynamic-mode supervisor policy (selection heuristics and retry policy)
-
