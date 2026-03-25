@@ -37,3 +37,8 @@ uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 Then open `http://127.0.0.1:8000`.
 
 For backend details, see [backend/README.md](backend/README.md).
+
+Key backend additions in MVP-1:
+- config-driven agent/workflow specs under `backend/config/`
+- `POST /admin/reload` for runtime config reload
+- `POST /chat` supports optional `workflow_id`
