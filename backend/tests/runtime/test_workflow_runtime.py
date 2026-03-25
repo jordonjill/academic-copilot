@@ -202,6 +202,15 @@ def test_workflow_routes_based_on_route_key(workflow_runtime, proposal_state):
     assert next_node == "researcher"
 
 
+def test_route_key_wins_over_research_plan_step_type(workflow_runtime, proposal_state):
+    proposal_state["route_key"] = "synthesize"
+    proposal_state["research_plan"] = ResearchPlan(
+        has_enough_content=True, step_type="search", query="q"
+    )
+    next_node = workflow_runtime.next_node("planner", proposal_state)
+    assert next_node == "synthesizer"
+
+
 def test_workflow_routes_using_research_plan_when_route_key_missing(
     workflow_runtime, proposal_state
 ):

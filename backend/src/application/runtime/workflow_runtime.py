@@ -46,8 +46,8 @@ class WorkflowRuntime:
         self, condition: Any, state: dict[str, Any], route_key: str | None
     ) -> bool:
         if isinstance(condition, str):
-            if route_key and route_key == condition:
-                return True
+            if route_key:
+                return route_key == condition
             return condition in self._string_condition_candidates(state)
 
         if isinstance(condition, dict):
