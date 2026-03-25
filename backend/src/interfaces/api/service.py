@@ -12,6 +12,7 @@ Academic Copilot 服务层。
 """
 from __future__ import annotations
 import asyncio
+import os
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +34,10 @@ _MODEL_CONFIGS: Dict[str, Dict[str, str]] = {
     "openai":  {"provider": "openai",       "model": "gpt-4o"},
 }
 
+_PROPOSAL_V2_WORKFLOW_ID = "proposal_v2"
+_LEGACY_PROPOSAL_WORKFLOW_ID = "proposal_workflow"
+_PROPOSAL_V2_ROLLBACK_ENV = "PROPOSAL_V2_ROLLBACK"
+
 _CONFIG_ROOT = Path(__file__).resolve().parents[3] / "config"
 _CONFIG_REGISTRY = ConfigRegistry(config_root=_CONFIG_ROOT)
 
@@ -51,6 +56,15 @@ def reload_runtime_config() -> Dict[str, Any]:
         },
         "failed": report["failed_objects"],
     }
+
+
+def _resolve_requested_workflow_id(workflow_id: Optional[str]) -> Optional[str]:
+    if (
+        workflow_id == _PROPOSAL_V2_WORKFLOW_ID
+        and os.getenv(_PROPOSAL_V2_ROLLBACK_ENV) == "1"
+    ):
+        return _LEGACY_PROPOSAL_WORKFLOW_ID
+    return workflow_id
 
 
 def _make_llm(model_type: str, temperature: float = 0):
@@ -85,7 +99,8 @@ class AcademicCopilotApp:
         recursion_limit: int = 25,
     ) -> Dict[str, Any]:
         sid = session_id or str(uuid.uuid4())
-        inputs = self._build_state(user_message, user_id, sid, workflow_id)
+        effective_workflow_id = _resolve_requested_workflow_id(workflow_id)
+        inputs = self._build_state(user_message, user_id, sid, effective_workflow_id)
 
         if websocket_send:
             await websocket_send({"type": "status",

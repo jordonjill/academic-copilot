@@ -8,6 +8,7 @@ Academic Copilot 主图（Supervisor 路由层）。
       └─ survey_workflow   → stm_compression → END
 """
 from __future__ import annotations
+import os
 from functools import partial
 
 from dotenv import load_dotenv
@@ -23,6 +24,23 @@ from src.application.workflows.survey_workflow import build_survey_subgraph
 from src.infrastructure.memory.stm import stm_compression_node
 
 load_dotenv()
+
+LEGACY_PROPOSAL_ROUTE = "proposal_workflow"
+PROPOSAL_V2_ROUTE = "proposal_v2"
+PROPOSAL_V2_ROLLBACK_ENV = "PROPOSAL_V2_ROLLBACK"
+
+
+def _is_proposal_v2_rollback_enabled() -> bool:
+    return os.getenv(PROPOSAL_V2_ROLLBACK_ENV) == "1"
+
+
+def resolve_supervisor_route(state: GlobalState) -> str:
+    route = route_by_intent(state)
+    if route != LEGACY_PROPOSAL_ROUTE:
+        return route
+    if _is_proposal_v2_rollback_enabled():
+        return LEGACY_PROPOSAL_ROUTE
+    return PROPOSAL_V2_ROUTE
 
 
 def build_main_graph(llm):
@@ -40,7 +58,8 @@ def build_main_graph(llm):
 
     builder.add_node("supervisor", supervisor)
     builder.add_node("chitchat", chitchat)
-    builder.add_node("proposal_workflow", proposal_subgraph)
+    builder.add_node(LEGACY_PROPOSAL_ROUTE, proposal_subgraph)
+    builder.add_node(PROPOSAL_V2_ROUTE, proposal_subgraph)
     builder.add_node("survey_workflow", survey_subgraph)
     builder.add_node("stm_compression", stm_compress)
 
@@ -48,16 +67,17 @@ def build_main_graph(llm):
 
     builder.add_conditional_edges(
         "supervisor",
-        route_by_intent,
+        resolve_supervisor_route,
         {
             "chitchat": "chitchat",
-            "proposal_workflow": "proposal_workflow",
+            LEGACY_PROPOSAL_ROUTE: LEGACY_PROPOSAL_ROUTE,
+            PROPOSAL_V2_ROUTE: PROPOSAL_V2_ROUTE,
             "survey_workflow": "survey_workflow",
         },
     )
 
     # 所有路径收敛到 stm_compression
-    for node in ["chitchat", "proposal_workflow", "survey_workflow"]:
+    for node in ["chitchat", LEGACY_PROPOSAL_ROUTE, PROPOSAL_V2_ROUTE, "survey_workflow"]:
         builder.add_edge(node, "stm_compression")
 
     builder.add_edge("stm_compression", END)

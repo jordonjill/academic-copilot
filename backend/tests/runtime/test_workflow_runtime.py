@@ -1,6 +1,7 @@
 import pytest
 from langchain_core.tools import BaseTool
 
+from src.application.graph import resolve_supervisor_route
 from src.application.agents import AgentMode
 from src.application.runtime import agent_runtime
 from src.application.runtime.spec_models import AgentSpec, WorkflowSpec
@@ -268,3 +269,21 @@ def test_enforce_limits_raises_on_loop_limit(workflow_runtime, proposal_state):
     proposal_state["_loop_count"] = workflow_runtime.spec.limits.get("max_loops", 6)
     with pytest.raises(RuntimeError, match="max_loops"):
         workflow_runtime.enforce_limits(proposal_state)
+
+
+def test_default_proposal_route_resolves_to_proposal_v2_path(monkeypatch):
+    monkeypatch.delenv("PROPOSAL_V2_ROLLBACK", raising=False)
+    state = {
+        "current_intent": type("Intent", (), {"intent": "PROPOSAL_GEN"})(),
+    }
+
+    assert resolve_supervisor_route(state) == "proposal_v2"
+
+
+def test_rollback_env_toggles_proposal_route_to_legacy_path(monkeypatch):
+    monkeypatch.setenv("PROPOSAL_V2_ROLLBACK", "1")
+    state = {
+        "current_intent": type("Intent", (), {"intent": "PROPOSAL_GEN"})(),
+    }
+
+    assert resolve_supervisor_route(state) == "proposal_workflow"
