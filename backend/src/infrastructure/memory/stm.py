@@ -132,13 +132,13 @@ def stm_compression_node(state: GlobalState, llm: BaseLanguageModel) -> Dict:
     if threshold_exceeded:
         keep_recent = STM_KEEP_RECENT if STM_KEEP_RECENT > 0 else len(messages)
         keep_recent = min(len(messages), keep_recent)
-        keep_backbone_recent = min(len(backbone), keep_recent)
+        recent_messages = messages[-keep_recent:] if keep_recent > 0 else []
+        recent_backbone = _filter_backbone(recent_messages)
         old_messages = (
-            backbone[: len(backbone) - keep_backbone_recent]
-            if keep_backbone_recent < len(backbone)
+            backbone[: len(backbone) - len(recent_backbone)]
+            if len(backbone) - len(recent_backbone) > 0
             else []
         )
-        recent_messages = messages[-keep_recent:] if keep_recent > 0 else []
 
         if old_messages:
             conversation_text = "\n".join(

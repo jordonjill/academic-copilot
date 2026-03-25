@@ -160,19 +160,23 @@ def test_non_string_summary_recorded(monkeypatch, tmp_path):
 def test_recent_raw_context_preserved(monkeypatch, tmp_path):
     db_path = _prepare_db(tmp_path, monkeypatch)
     monkeypatch.setattr(stm_module, "STM_TOKEN_THRESHOLD", 1)
-    monkeypatch.setattr(stm_module, "STM_KEEP_RECENT", 2)
+    monkeypatch.setattr(stm_module, "STM_KEEP_RECENT", 4)
     messages = [
         HumanMessage(content="old"),
         SystemMessage(content="system note"),
         ToolMessage(content="tool call", tool_call_id="search-1"),
         AIMessage(content="recent reply"),
+        HumanMessage(content="tail note"),
     ]
     state = _base_state(messages)
     result = stm_compression_node(state, FakeListChatModel(responses=["compressed summary"]))
 
     compressed = result["messages"]
     assert any(isinstance(m, ToolMessage) for m in compressed), "Tool message should survive recent window"
-    assert any(isinstance(m, SystemMessage) for m in compressed)
+    assert any(
+        isinstance(m, SystemMessage) and m.content == "system note"
+        for m in compressed
+    )
 
 
 def test_snapshot_round_trip_compatible(monkeypatch, tmp_path):
