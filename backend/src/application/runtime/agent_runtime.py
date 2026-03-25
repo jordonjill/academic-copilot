@@ -17,7 +17,15 @@ def build_agent_from_spec(
     llm: BaseLanguageModel,
     tool_resolver: ToolResolver,
 ) -> Runnable | Any:
-    tools: List[BaseTool] = [tool_resolver(tool_id) for tool_id in spec.tools]
+    tools: List[BaseTool] = []
+    for tool_id in spec.tools:
+        try:
+            tool = tool_resolver(tool_id)
+        except Exception as exc:  # pragma: no cover - error path in resolver
+            raise ValueError(f"Failed to resolve tool: {tool_id}") from exc
+        if tool is None:
+            raise ValueError(f"Tool resolver returned None for: {tool_id}")
+        tools.append(tool)
 
     if spec.mode == "chain":
         mode = AgentMode.CHAIN
