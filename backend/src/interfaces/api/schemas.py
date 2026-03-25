@@ -7,6 +7,7 @@ class ChatRequest(BaseModel):
     message: str
     user_id: str = "default"
     session_id: Optional[str] = None
+    workflow_id: Optional[str] = None
     model_type: str = "ollama"
 
 

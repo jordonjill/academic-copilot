@@ -40,6 +40,7 @@ async def chat(
             user_message=request.message,
             user_id=request.user_id,
             session_id=session_id,
+            workflow_id=request.workflow_id,
             recursion_limit=25,
         )
     except Exception as e:

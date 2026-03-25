@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from dotenv import load_dotenv
@@ -22,6 +23,7 @@ from langchain_ollama.chat_models import ChatOllama
 from langchain.chat_models import init_chat_model
 
 from src.application.graph import build_main_graph
+from src.application.runtime.config_registry import ConfigRegistry
 
 load_dotenv()
 
@@ -30,6 +32,25 @@ _MODEL_CONFIGS: Dict[str, Dict[str, str]] = {
     "gemini":  {"provider": "google_genai", "model": "gemini-2.5-flash"},
     "openai":  {"provider": "openai",       "model": "gpt-4o"},
 }
+
+_CONFIG_ROOT = Path(__file__).resolve().parents[3] / "config"
+_CONFIG_REGISTRY = ConfigRegistry(config_root=_CONFIG_ROOT)
+
+
+def get_config_registry() -> ConfigRegistry:
+    return _CONFIG_REGISTRY
+
+
+def reload_runtime_config() -> Dict[str, Any]:
+    report = _CONFIG_REGISTRY.reload()
+    return {
+        "config_version": report["config_version"],
+        "loaded": {
+            "agents": report["loaded_agents"],
+            "workflows": report["loaded_workflows"],
+        },
+        "failed": report["failed_objects"],
+    }
 
 
 def _make_llm(model_type: str, temperature: float = 0):
@@ -59,11 +80,12 @@ class AcademicCopilotApp:
         user_message: str,
         user_id: str = "default",
         session_id: Optional[str] = None,
+        workflow_id: Optional[str] = None,
         websocket_send: Optional[Callable] = None,
         recursion_limit: int = 25,
     ) -> Dict[str, Any]:
         sid = session_id or str(uuid.uuid4())
-        inputs = self._build_state(user_message, user_id, sid)
+        inputs = self._build_state(user_message, user_id, sid, workflow_id)
 
         if websocket_send:
             await websocket_send({"type": "status",
@@ -122,7 +144,13 @@ class AcademicCopilotApp:
             yield step
 
     @staticmethod
-    def _build_state(user_message: str, user_id: str, session_id: str) -> Dict:
+    def _build_state(
+        user_message: str,
+        user_id: str,
+        session_id: str,
+        workflow_id: Optional[str] = None,
+    ) -> Dict:
+        orchestration_mode = "workflow" if workflow_id else "dynamic"
         return {
             "messages": [HumanMessage(content=user_message)],
             "user_id": user_id,
@@ -144,6 +172,14 @@ class AcademicCopilotApp:
             "stm_token_count": 0,
             "stm_compressed": False,
             "ltm_extraction_done": False,
+            "pending_workflow_confirmation": False,
+            "suggested_workflow_id": workflow_id,
+            "orchestration_mode": orchestration_mode,
+            "selected_subagents": [],
+            "confirmation_expires_at_turn": None,
+            "last_selected_agent_id": None,
+            "agent_retry_counters": {},
+            "clarification_required": False,
         }
 
     @staticmethod

@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.interfaces.api.routes import chat, research, health
+from src.interfaces.api.routes import admin, chat, research, health
 from src.infrastructure.tools.mcp_loader import initialize_mcp_tools
 from src.infrastructure.tools.registry import _init_role_tools
 
@@ -46,6 +46,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
 app.include_router(chat.router)
 app.include_router(research.router)
 app.include_router(health.router)
+app.include_router(admin.router)
 
 if FRONTEND_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
