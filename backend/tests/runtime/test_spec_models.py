@@ -52,7 +52,8 @@ def test_workflow_spec_requires_edges_field():
                 "nodes": {"start": {"type": "agent"}},
             }
         )
-    assert "edges" in str(exc.value)
+    errors = exc.value.errors()
+    assert any(error["loc"] == ("edges",) for error in errors)
 
 
 def test_agent_spec_rejects_extra_top_level_fields():
@@ -67,7 +68,8 @@ def test_agent_spec_rejects_extra_top_level_fields():
                 "extra": "not allowed",
             }
         )
-    assert "extra" in str(exc.value)
+    errors = exc.value.errors()
+    assert any(error["loc"] == ("extra",) for error in errors)
 
 
 def test_agent_spec_rejects_extra_fields_in_llm():
@@ -85,4 +87,5 @@ def test_agent_spec_rejects_extra_fields_in_llm():
                 },
             }
         )
-    assert "extra_llm" in str(exc.value)
+    errors = exc.value.errors()
+    assert any(error["loc"] == ("llm", "extra_llm") for error in errors)
