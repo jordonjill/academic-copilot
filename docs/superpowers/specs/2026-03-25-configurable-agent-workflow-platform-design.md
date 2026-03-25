@@ -34,6 +34,7 @@ The goal of MVP-1 is to move to a configuration-driven orchestration model while
   - Persist every Human/AI message
   - Compress only working context when threshold exceeded
   - Keep full historical conversation intact
+  - This memory system is a required MVP-1 deliverable (not deferred as a separate epic)
 
 ### 2.2 Out-of-Scope (MVP-1)
 
@@ -68,6 +69,8 @@ The goal of MVP-1 is to move to a configuration-driven orchestration model while
   - `doi_resolver`
   - `citation_formatter`
   - `pdf_metadata_extract`
+  - `docx_export`
+  - `pdf_export`
 
 3. Agent Runtime (new)
 - Creates runtime subagents from `AgentSpec`
@@ -213,6 +216,10 @@ Confirmation protocol (required for deterministic implementation):
 - Accepted reply examples: `yes`, `use workflow`, `使用`
 - Rejected reply examples: `no`, `don't use`, `不使用`
 - If suggestion expires without confirmation, runtime falls back to dynamic mode
+- If user sends a new non-confirmation request while confirmation is pending:
+  - discard current workflow suggestion
+  - clear confirmation state
+  - switch to dynamic mode and answer the new request directly
 
 ## 5.2 New Conversation State Fields
 
@@ -223,6 +230,8 @@ Add to global state:
 - `orchestration_mode: Literal["workflow", "dynamic"]`
 - `selected_subagents: List[str]` (execution trace)
 - `confirmation_expires_at_turn: Optional[int]`
+- `last_selected_agent_id: Optional[str]`
+- `agent_retry_counters: Dict[str, int]`
 
 ## 5.3 Dynamic Mode (No Explicit Workflow)
 
@@ -235,6 +244,8 @@ When user rejects suggested workflow:
 - Runtime guardrails apply:
   - `dynamic_max_substeps` (default 8)
   - `dynamic_idle_limit` (default 2 consecutive no-progress turns)
+  - `max_retries_per_agent` (default 2 consecutive selections of the same agent)
+  - If same-agent retry limit is hit, supervisor must choose a different agent or ask user clarification
   - On guardrail breach: return structured clarification prompt to user
 
 ## 6. Memory Strategy (Aligned with Requirements)
@@ -322,7 +333,8 @@ Persist extracted facts with provenance:
 
 - Existing proposal/survey/chat behavior remains available during migration
 - Legacy hardcoded graph can coexist behind compatibility path
-- `proposal_v2` is introduced incrementally and made default only after verification
+- `proposal_v2` directly replaces the legacy proposal workflow in default routing for MVP-1 release
+- Legacy proposal workflow is retained only as emergency rollback path
 - Existing clients that do not handle `type=workflow_suggestion` should still receive a human-readable `message`
 
 ## 9. Testing and Acceptance Criteria
@@ -341,13 +353,17 @@ Persist extracted facts with provenance:
 - `POST /chat` with explicit `workflow_id`
 - intent-based workflow suggestion -> user accepts path
 - intent-based workflow suggestion -> user rejects -> dynamic mode path
+- pending-confirmation interruption path: new question arrives -> suggestion discarded -> dynamic answer returned
 - `proposal_v2` loop path (critic rejects then returns to synthesize)
+- dynamic mode same-agent retry cap enforcement (`max_retries_per_agent`)
 
 ## 9.3 Acceptance Criteria
 
 - New agent/workflow can be enabled/disabled by config changes without code edits
 - `proposal_v2` runs end-to-end under runtime limits
+- `proposal_v2` is the default proposal route in MVP-1
 - User can reject suggested workflow and still complete task via dynamic orchestration
+- User interruption during workflow confirmation immediately cancels suggestion and receives dynamic-mode response
 - Full raw conversation history remains intact after compression
 - Reload endpoint reports deterministic object-level status
 
@@ -369,7 +385,9 @@ Phase 3: Supervisor Integration
 
 - Add workflow suggestion/confirmation state machine
 - Add reject -> dynamic mode branch
+- Add confirmation-interruption handling (auto-discard suggestion on new request)
 - Extend `/chat` with explicit `workflow_id`
+- Make `proposal_v2` the default proposal route (legacy as rollback only)
 
 Phase 4: Memory alignment
 
@@ -398,23 +416,7 @@ The following items come from the original modernization vision but are intentio
 - Support user-defined tool registration flow (metadata + implementation binding) with security guardrails.
 - Ensure subagent config can bind to any registered tool uniformly without changing agent runtime code.
 
-### 11.2 Epic C: Memory System Re-architecture
-
-- Persist both Human input and AI response for every turn in immutable raw history.
-- Keep compression-only working context:
-  - after each round, evaluate token usage
-  - when threshold exceeded, inject compressed summary + recent turns into model context
-  - retain all original historical turns for replay/audit
-- Store compression artifacts:
-  - compression trigger reason
-  - pre/post token counts
-  - summary version/hash
-- Add long-term memory extraction schedules:
-  - per-session end extraction
-  - daily aggregation extraction
-- Define merge and dedup policy between session-level and daily-level memory facts.
-
-### 11.3 Epic D: Runtime Governance and Operations
+### 11.2 Runtime Governance and Operations (Epic D)
 
 - Add policy and permission model for dynamic subagent/workflow/tool execution.
 - Add audit trail for:
@@ -434,5 +436,4 @@ The following items come from the original modernization vision but are intentio
 
 - Exact expression format for edge conditions (`route_key` vs expression DSL)
 - First batch and order of new academic tools to implement concretely (MVP minimum: implement at least two adapters beyond existing `web_search` and `arxiv_search`; others may be staged)
-- Whether `proposal_v2` immediately replaces old proposal workflow in default routing
 - Detailed dynamic-mode supervisor policy (selection heuristics and retry policy)
