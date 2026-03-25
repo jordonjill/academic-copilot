@@ -16,12 +16,14 @@ class WorkflowRuntime:
             raise RuntimeError(f"No valid transition from node: {current_node}")
 
         route_key = self._resolve_route_key(state)
+        conditional_edges = [edge for edge in edges if edge.get("condition") is not None]
+
+        for edge in conditional_edges:
+            if self._condition_matches(edge.get("condition"), state, route_key):
+                return edge["to"]
 
         for edge in edges:
-            condition = edge.get("condition")
-            if condition is None:
-                return edge["to"]
-            if self._condition_matches(condition, state, route_key):
+            if edge.get("condition") is None:
                 return edge["to"]
 
         raise RuntimeError(f"No valid transition from node: {current_node}")
@@ -38,25 +40,15 @@ class WorkflowRuntime:
         route_key = state.get("route_key")
         if route_key:
             return route_key
-
-        research_plan = state.get("research_plan")
-        if research_plan is None:
-            return None
-
-        plan_step_type = getattr(research_plan, "step_type", None)
-        if plan_step_type:
-            return plan_step_type
-
-        if isinstance(research_plan, dict):
-            return research_plan.get("step_type")
-
         return None
 
     def _condition_matches(
         self, condition: Any, state: dict[str, Any], route_key: str | None
     ) -> bool:
         if isinstance(condition, str):
-            return bool(route_key and route_key == condition)
+            if route_key and route_key == condition:
+                return True
+            return condition in self._string_condition_candidates(state)
 
         if isinstance(condition, dict):
             field = condition.get("field")
@@ -78,3 +70,25 @@ class WorkflowRuntime:
             if value is None:
                 return None
         return value
+
+    def _string_condition_candidates(self, state: dict[str, Any]) -> list[str]:
+        candidates: list[str] = []
+        research_plan = state.get("research_plan")
+        if research_plan is not None:
+            plan_step_type = getattr(research_plan, "step_type", None)
+            if plan_step_type:
+                candidates.append(plan_step_type)
+            elif isinstance(research_plan, dict):
+                step_type = research_plan.get("step_type")
+                if step_type:
+                    candidates.append(step_type)
+
+        research_critic = state.get("research_critic")
+        if research_critic is not None:
+            critic_valid = getattr(research_critic, "is_valid", None)
+            if critic_valid is not None:
+                candidates.append("valid" if critic_valid else "revise")
+            elif isinstance(research_critic, dict) and "is_valid" in research_critic:
+                candidates.append("valid" if research_critic["is_valid"] else "revise")
+
+        return candidates

@@ -147,6 +147,9 @@ def proposal_workflow_spec():
                 "researcher": {"type": "agent", "agent_id": "researcher"},
                 "synthesizer": {"type": "agent", "agent_id": "synthesizer"},
                 "critic": {"type": "agent", "agent_id": "critic"},
+                "critic_dict": {"type": "agent", "agent_id": "critic"},
+                "dual": {"type": "agent", "agent_id": "dual"},
+                "strict": {"type": "agent", "agent_id": "strict"},
                 "reporter": {"type": "agent", "agent_id": "reporter"},
                 "end": {"type": "terminal"},
             },
@@ -155,16 +158,21 @@ def proposal_workflow_spec():
                 {"from": "planner", "to": "synthesizer", "condition": "synthesize"},
                 {"from": "researcher", "to": "planner"},
                 {"from": "synthesizer", "to": "critic"},
+                {"from": "critic", "to": "reporter", "condition": "valid"},
+                {"from": "critic", "to": "synthesizer", "condition": "revise"},
                 {
-                    "from": "critic",
+                    "from": "critic_dict",
                     "to": "reporter",
                     "condition": {"field": "research_critic.is_valid", "equals": True},
                 },
                 {
-                    "from": "critic",
+                    "from": "critic_dict",
                     "to": "synthesizer",
                     "condition": {"field": "research_critic.is_valid", "equals": False},
                 },
+                {"from": "dual", "to": "reporter", "condition": "use_cond"},
+                {"from": "dual", "to": "end"},
+                {"from": "strict", "to": "synthesizer", "condition": "only"},
                 {"from": "reporter", "to": "end"},
             ],
             "limits": {"max_steps": 5, "max_loops": 3},
@@ -211,9 +219,29 @@ def test_default_edge_used_when_no_condition_matches(workflow_runtime, proposal_
 
 def test_dict_condition_routing(workflow_runtime, proposal_state):
     proposal_state["research_critic"] = ResearchCritic(is_valid=False)
-    assert workflow_runtime.next_node("critic", proposal_state) == "synthesizer"
+    assert workflow_runtime.next_node("critic_dict", proposal_state) == "synthesizer"
+    proposal_state["research_critic"] = ResearchCritic(is_valid=True)
+    assert workflow_runtime.next_node("critic_dict", proposal_state) == "reporter"
+
+
+def test_critic_string_conditions_from_research_critic_state(workflow_runtime, proposal_state):
+    proposal_state["route_key"] = ""
     proposal_state["research_critic"] = ResearchCritic(is_valid=True)
     assert workflow_runtime.next_node("critic", proposal_state) == "reporter"
+    proposal_state["research_critic"] = ResearchCritic(is_valid=False)
+    assert workflow_runtime.next_node("critic", proposal_state) == "synthesizer"
+
+
+def test_conditional_edges_take_precedence_over_unconditional(workflow_runtime, proposal_state):
+    proposal_state["route_key"] = "use_cond"
+    assert workflow_runtime.next_node("dual", proposal_state) == "reporter"
+    proposal_state["route_key"] = "other"
+    assert workflow_runtime.next_node("dual", proposal_state) == "end"
+
+
+def test_runtime_error_when_conditions_exist_but_none_match(workflow_runtime, proposal_state):
+    with pytest.raises(RuntimeError):
+        workflow_runtime.next_node("strict", proposal_state)
 
 
 def test_next_node_raises_without_valid_transition(workflow_runtime, proposal_state):
