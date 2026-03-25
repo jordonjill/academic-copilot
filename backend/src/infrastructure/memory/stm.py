@@ -106,8 +106,10 @@ def stm_compression_node(state: GlobalState, llm: BaseLanguageModel) -> Dict:
     _persist_backbone(store, session_id, backbone)
 
     raw_rows: List[tuple[str, str, int]] = []
-    for m in backbone:
-        content = m.content if isinstance(m.content, str) else str(m.content)
+    for m in messages:
+        if not isinstance(m, (HumanMessage, AIMessage)):
+            continue
+        content = m.content if isinstance(m.content, str) else json.dumps(m.content, ensure_ascii=False)
         role = "human" if isinstance(m, HumanMessage) else "assistant"
         raw_rows.append((role, content, _estimate_tokens([m])))
     store.save_raw_messages(session_id, raw_rows)
@@ -116,7 +118,8 @@ def stm_compression_node(state: GlobalState, llm: BaseLanguageModel) -> Dict:
     final_token_count = token_count
     stm_compressed = False
 
-    if token_count > STM_TOKEN_THRESHOLD:
+    threshold_exceeded = token_count > STM_TOKEN_THRESHOLD
+    if threshold_exceeded:
         keep_recent = STM_KEEP_RECENT if STM_KEEP_RECENT > 0 else len(backbone)
         keep_recent = min(len(backbone), keep_recent)
         old_messages = backbone[: len(backbone) - keep_recent] if keep_recent < len(backbone) else []
@@ -164,6 +167,15 @@ def stm_compression_node(state: GlobalState, llm: BaseLanguageModel) -> Dict:
                 pass
             except Exception as exc:  # pragma: no cover - best effort
                 print(f"[STM] LTM async task scheduling failed: {exc}")
+        else:
+            store.save_compression_event(
+                session_id=session_id,
+                trigger_reason="stm_token_threshold",
+                pre_tokens=token_count,
+                post_tokens=token_count,
+                summary_text="no-op compression",
+                summary_version=COMPRESSION_SUMMARY_VERSION,
+            )
 
     store.save_working_context_snapshot(
         session_id,

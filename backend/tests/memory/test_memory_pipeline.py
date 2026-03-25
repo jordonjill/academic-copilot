@@ -34,9 +34,10 @@ def _base_state(messages):
 def test_raw_messages_persist_each_turn(monkeypatch, tmp_path):
     db_path = _prepare_db(tmp_path, monkeypatch)
     monkeypatch.setattr(stm_module, "STM_TOKEN_THRESHOLD", 9999)
+    ai_content = [{"type": "text", "text": "ai list"}]
     state = _base_state([
         HumanMessage(content="hello"),
-        AIMessage(content="hi there"),
+        AIMessage(content=ai_content),
     ])
     result = stm_compression_node(state, FakeListChatModel(responses=["never-used"]))
 
@@ -49,6 +50,7 @@ def test_raw_messages_persist_each_turn(monkeypatch, tmp_path):
     assert working_rows[-1]["is_compressed"] == 0
     assert working_rows[-1]["token_count"] == result["stm_token_count"]
     assert result["stm_compressed"] is False
+    assert raw_rows[1]["content"] == json.dumps(ai_content, ensure_ascii=False)
 
 
 def test_compression_rewrites_working_context_history_remains(monkeypatch, tmp_path):
@@ -110,3 +112,23 @@ def test_no_compression_event_when_within_threshold(monkeypatch, tmp_path):
 
     events = _read_rows(db_path, "compression_events")
     assert not events
+
+
+def test_threshold_exceeded_without_old_messages_records_event(monkeypatch, tmp_path):
+    db_path = _prepare_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(stm_module, "STM_TOKEN_THRESHOLD", 2)
+    monkeypatch.setattr(stm_module, "STM_KEEP_RECENT", 5)
+    long_text = "x" * 500
+    state = _base_state([
+        HumanMessage(content=long_text),
+    ])
+    result = stm_compression_node(state, FakeListChatModel(responses=["unused summary"]))
+
+    events = _read_rows(db_path, "compression_events")
+    assert len(events) == 1
+    event = events[0]
+    assert event["summary_text"] == "no-op compression"
+    assert event["summary_digest"]
+    assert event["pre_tokens"] == result["stm_token_count"]
+    assert event["post_tokens"] == result["stm_token_count"]
+    assert result["stm_compressed"] is False
