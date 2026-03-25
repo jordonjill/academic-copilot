@@ -38,6 +38,8 @@ class SupervisorOrchestrator:
         self, state: dict, candidates: Optional[List[str]] = None
     ) -> Optional[str]:
         """Select the next subagent, respecting the retry cap for the last agent."""
+        state["clarification_required"] = False
+
         pool = (
             list(candidates)
             if candidates is not None
@@ -56,10 +58,12 @@ class SupervisorOrchestrator:
             ):
                 continue
 
+            state["clarification_required"] = False
             state["last_selected_agent_id"] = candidate
             counters[candidate] = counters.get(candidate, 0) + 1
             return candidate
 
+        state["clarification_required"] = True
         return None
 
     def _clear_pending_confirmation(self, state: dict) -> None:

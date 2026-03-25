@@ -118,3 +118,4 @@ class GlobalState(MessagesState):
     confirmation_expires_at_turn: Optional[int] = None
     last_selected_agent_id: Optional[str] = None
     agent_retry_counters: Dict[str, int] = Field(default_factory=dict)
+    clarification_required: bool = False
