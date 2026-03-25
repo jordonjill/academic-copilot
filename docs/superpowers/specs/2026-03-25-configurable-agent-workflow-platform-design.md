@@ -383,7 +383,54 @@ Phase 5: Stabilization
 - Enable compatibility fallback
 - Document operational runbook for reload and failure recovery
 
-## 11. Open Decisions Deferred to Implementation Plan
+## 11. Backlog TODO (Post MVP-1)
+
+The following items come from the original modernization vision but are intentionally deferred from this MVP-1 implementation scope. Keep them as tracked epics for subsequent spec/plan cycles.
+
+### 11.1 Epic B: Unified Tooling Abstraction (skills/tools/mcp)
+
+- Define whether `skills`, built-in `tools`, and `mcp` endpoints are represented as one logical tool type in runtime.
+- Evaluate two architecture options:
+  - unified abstraction layer with multiple adapters
+  - standardized MCP-first contract for all tool providers
+- Add capability metadata for each tool:
+  - `tool_id`, `provider_type`, `permissions`, `cost_profile`, `latency_profile`
+- Support user-defined tool registration flow (metadata + implementation binding) with security guardrails.
+- Ensure subagent config can bind to any registered tool uniformly without changing agent runtime code.
+
+### 11.2 Epic C: Memory System Re-architecture
+
+- Persist both Human input and AI response for every turn in immutable raw history.
+- Keep compression-only working context:
+  - after each round, evaluate token usage
+  - when threshold exceeded, inject compressed summary + recent turns into model context
+  - retain all original historical turns for replay/audit
+- Store compression artifacts:
+  - compression trigger reason
+  - pre/post token counts
+  - summary version/hash
+- Add long-term memory extraction schedules:
+  - per-session end extraction
+  - daily aggregation extraction
+- Define merge and dedup policy between session-level and daily-level memory facts.
+
+### 11.3 Epic D: Runtime Governance and Operations
+
+- Add policy and permission model for dynamic subagent/workflow/tool execution.
+- Add audit trail for:
+  - supervisor decisions
+  - selected subagents
+  - called workflows
+  - invoked tools
+- Add observability:
+  - per-node latency
+  - per-tool error rate
+  - token consumption by mode (`workflow` vs `dynamic`)
+- Add config/version governance:
+  - rollback to previous known-good config snapshot
+  - change history and operator identity
+
+## 12. Open Decisions Deferred to Implementation Plan
 
 - Exact expression format for edge conditions (`route_key` vs expression DSL)
 - First batch and order of new academic tools to implement concretely (MVP minimum: implement at least two adapters beyond existing `web_search` and `arxiv_search`; others may be staged)
