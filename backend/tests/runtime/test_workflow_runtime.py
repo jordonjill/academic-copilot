@@ -1,3 +1,4 @@
+import pytest
 from langchain_core.tools import BaseTool
 
 from src.application.agents import AgentMode
@@ -96,5 +97,37 @@ def test_build_react_agent_from_spec_wires_mode(monkeypatch):
     assert captured["output_schema"] is None
 
 
-def test_build_agent_from_spec_has_return_annotation():
-    assert agent_runtime.build_agent_from_spec.__annotations__.get("return") is not None
+def test_build_agent_from_spec_raises_on_resolver_error():
+    spec = AgentSpec(
+        id="planner",
+        name="Planner Agent",
+        mode="chain",
+        system_prompt="You plan",
+        tools=["web_search"],
+        llm={"provider": "openai", "model": "gpt-4o-mini"},
+    )
+
+    def tool_resolver(tool_id):
+        raise RuntimeError("boom")
+
+    with pytest.raises(ValueError) as exc:
+        agent_runtime.build_agent_from_spec(spec, object(), tool_resolver)
+    assert "web_search" in str(exc.value)
+
+
+def test_build_agent_from_spec_raises_on_missing_tool():
+    spec = AgentSpec(
+        id="planner",
+        name="Planner Agent",
+        mode="chain",
+        system_prompt="You plan",
+        tools=["arxiv"],
+        llm={"provider": "openai", "model": "gpt-4o-mini"},
+    )
+
+    def tool_resolver(tool_id):
+        return None
+
+    with pytest.raises(ValueError) as exc:
+        agent_runtime.build_agent_from_spec(spec, object(), tool_resolver)
+    assert "arxiv" in str(exc.value)

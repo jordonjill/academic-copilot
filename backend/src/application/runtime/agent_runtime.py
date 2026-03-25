@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable, List
+from typing import Any, Callable, List, Optional
 
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.runnables import Runnable
@@ -9,7 +9,7 @@ from langchain_core.tools import BaseTool
 from src.application.agents import AgentMode, create_subagent
 from src.application.runtime.spec_models import AgentSpec
 
-ToolResolver = Callable[[str], BaseTool]
+ToolResolver = Callable[[str], Optional[BaseTool]]
 
 
 def build_agent_from_spec(
@@ -21,7 +21,7 @@ def build_agent_from_spec(
     for tool_id in spec.tools:
         try:
             tool = tool_resolver(tool_id)
-        except Exception as exc:  # pragma: no cover - error path in resolver
+        except Exception as exc:
             raise ValueError(f"Failed to resolve tool: {tool_id}") from exc
         if tool is None:
             raise ValueError(f"Tool resolver returned None for: {tool_id}")
