@@ -5,6 +5,7 @@ from typing import List, Optional
 MAX_RETRIES_PER_AGENT = 2
 _ACCEPT_CONFIRMATION_PHRASES = {"yes", "use workflow", "使用"}
 _REJECT_CONFIRMATION_PHRASES = {"no", "don't use", "不使用"}
+_TRAILING_PUNCTUATION = ".,!?;:。！？；：，"
 
 
 class SupervisorOrchestrator:
@@ -15,7 +16,15 @@ class SupervisorOrchestrator:
         current_turn: Optional[int] = None,
     ) -> dict:
         """Process user input when a workflow suggestion is pending."""
-        if not text or not state.get("pending_workflow_confirmation", False):
+        pending_confirmation = state.get("pending_workflow_confirmation", False)
+        if pending_confirmation and self._confirmation_expired(
+            state.get("confirmation_expires_at_turn"), current_turn
+        ):
+            self._clear_pending_confirmation(state)
+            state["orchestration_mode"] = "dynamic"
+            pending_confirmation = False
+
+        if not text or not pending_confirmation:
             return state
 
         if self._is_confirmation_response(text):
@@ -65,9 +74,32 @@ class SupervisorOrchestrator:
             state["agent_retry_counters"] = counters
         return counters
 
+    def _confirmation_expired(
+        self, expires_at: Optional[int], current_turn: Optional[int]
+    ) -> bool:
+        return (
+            expires_at is not None
+            and current_turn is not None
+            and current_turn > expires_at
+        )
+
+    def _strip_trailing_punctuation(self, text: str) -> str:
+        trimmed = text.rstrip()
+        while trimmed and trimmed[-1] in _TRAILING_PUNCTUATION:
+            trimmed = trimmed[:-1].rstrip()
+        return trimmed
+
     def _is_confirmation_response(self, text: str) -> bool:
-        normalized = text.strip().lower()
+        normalized = self._normalize_confirmation_text(text)
         return (
             normalized in _ACCEPT_CONFIRMATION_PHRASES
             or normalized in _REJECT_CONFIRMATION_PHRASES
         )
+
+    def _normalize_confirmation_text(self, text: str) -> str:
+        normalized = text.strip().lower()
+        normalized = self._strip_trailing_punctuation(normalized)
+        if normalized.endswith(" please"):
+            normalized = normalized[: -len(" please")].rstrip()
+            normalized = self._strip_trailing_punctuation(normalized)
+        return normalized
