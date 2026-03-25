@@ -1,0 +1,44 @@
+id: proposal_v2
+name: Proposal v2
+entry_node: planner
+nodes:
+  planner:
+    type: agent
+    agent_id: planner_proposal
+  researcher:
+    type: agent
+    agent_id: researcher_proposal
+  synthesizer:
+    type: agent
+    agent_id: synthesizer_proposal
+  critic:
+    type: agent
+    agent_id: critic_proposal
+  reporter:
+    type: agent
+    agent_id: reporter_proposal
+  end:
+    type: terminal
+edges:
+  - from: planner
+    to: researcher
+    condition: search
+  - from: planner
+    to: synthesizer
+    condition: synthesize
+  - from: researcher
+    to: planner
+  - from: synthesizer
+    to: critic
+  - from: critic
+    to: reporter
+    condition: valid
+  - from: critic
+    to: synthesizer
+    condition: revise
+  - from: reporter
+    to: end
+limits:
+  max_steps: 20
+  max_loops: 4
+  timeout_ms: 600000

@@ -1,0 +1,10 @@
+id: planner_proposal
+name: Proposal Planner
+mode: chain
+system_prompt: |
+  Decide whether to search for more sources or synthesize the current findings for a research proposal.
+tools: []
+llm:
+  provider: openai
+  model: gpt-4o-mini
+  temperature: 0.0

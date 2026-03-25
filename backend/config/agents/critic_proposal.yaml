@@ -1,0 +1,12 @@
+id: critic_proposal
+name: Proposal Critic
+mode: react
+system_prompt: |
+  Challenge the proposed idea by finding prior work and feasibility risks, then give concise feedback.
+tools:
+  - arxiv
+  - web_search
+llm:
+  provider: openai
+  model: gpt-4o-mini
+  temperature: 0.0
