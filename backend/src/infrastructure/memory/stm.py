@@ -86,9 +86,19 @@ def _persist_backbone(store: SQLiteStore, session_id: str, backbone: List[BaseMe
 
 def _serialize_messages(messages: List[BaseMessage]) -> str:
     serialized = [message_to_dict(m) for m in messages]
-    for msg_dict, msg in zip(serialized, messages):
-        msg_dict["type"] = msg.__class__.__name__
     return json.dumps(serialized, ensure_ascii=False)
+
+
+def _normalize_summary_text(summary_response: object) -> str:
+    content = getattr(summary_response, "content", summary_response)
+    if isinstance(content, str):
+        return content
+    try:
+        if isinstance(content, BaseMessage):
+            return json.dumps(message_to_dict(content), ensure_ascii=False)
+        return json.dumps(content, ensure_ascii=False)
+    except Exception:
+        return str(content)
 
 
 def stm_compression_node(state: GlobalState, llm: BaseLanguageModel) -> Dict:
@@ -120,10 +130,15 @@ def stm_compression_node(state: GlobalState, llm: BaseLanguageModel) -> Dict:
 
     threshold_exceeded = token_count > STM_TOKEN_THRESHOLD
     if threshold_exceeded:
-        keep_recent = STM_KEEP_RECENT if STM_KEEP_RECENT > 0 else len(backbone)
-        keep_recent = min(len(backbone), keep_recent)
-        old_messages = backbone[: len(backbone) - keep_recent] if keep_recent < len(backbone) else []
-        recent_messages = backbone[-keep_recent:] if keep_recent > 0 else []
+        keep_recent = STM_KEEP_RECENT if STM_KEEP_RECENT > 0 else len(messages)
+        keep_recent = min(len(messages), keep_recent)
+        keep_backbone_recent = min(len(backbone), keep_recent)
+        old_messages = (
+            backbone[: len(backbone) - keep_backbone_recent]
+            if keep_backbone_recent < len(backbone)
+            else []
+        )
+        recent_messages = messages[-keep_recent:] if keep_recent > 0 else []
 
         if old_messages:
             conversation_text = "\n".join(
@@ -132,7 +147,7 @@ def stm_compression_node(state: GlobalState, llm: BaseLanguageModel) -> Dict:
             )
             compression_chain = STM_COMPRESSION_PROMPT | llm
             summary_response = compression_chain.invoke({"conversation_to_compress": conversation_text})
-            summary_text = summary_response.content if hasattr(summary_response, "content") else str(summary_response)
+            summary_text = _normalize_summary_text(summary_response)
 
             header = f"[Compressed Context — {datetime.utcnow().strftime('%Y-%m-%d')}]"
             compressed_messages = [

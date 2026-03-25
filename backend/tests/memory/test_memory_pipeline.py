@@ -1,7 +1,12 @@
 import json
 import sqlite3
-from langchain_core.language_models.fake_chat_models import FakeListChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.language_models.fake_chat_models import (
+    FakeListChatModel,
+    FakeMessagesListChatModel,
+)
+from langchain_core.language_models import BaseLanguageModel
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages.utils import messages_from_dict
 
 from src.infrastructure.memory import stm as stm_module
 from src.infrastructure.memory import sqlite_store
@@ -75,7 +80,7 @@ def test_compression_rewrites_working_context_history_remains(monkeypatch, tmp_p
 
     working_rows = _read_rows(db_path, "working_context")
     snapshot = json.loads(working_rows[-1]["serialized_messages"])
-    assert snapshot[0]["type"] == "SystemMessage"
+    assert snapshot[0]["type"] == "system"
     assert snapshot[-1]["data"]["content"] == messages[-1].content
 
     raw_rows = _read_rows(db_path, "raw_messages")
@@ -132,3 +137,53 @@ def test_threshold_exceeded_without_old_messages_records_event(monkeypatch, tmp_
     assert event["pre_tokens"] == result["stm_token_count"]
     assert event["post_tokens"] == result["stm_token_count"]
     assert result["stm_compressed"] is False
+
+
+def test_non_string_summary_recorded(monkeypatch, tmp_path):
+    db_path = _prepare_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(stm_module, "STM_TOKEN_THRESHOLD", 1)
+    monkeypatch.setattr(stm_module, "STM_KEEP_RECENT", 1)
+    state = _base_state([
+        HumanMessage(content="preamble"),
+        AIMessage(content="response"),
+    ])
+    summary_response = FakeMessagesListChatModel(responses=[AIMessage(content="structured summary")])
+    result = stm_compression_node(state, summary_response)
+
+    events = _read_rows(db_path, "compression_events")
+    assert len(events) == 1
+    event = events[0]
+    assert "summary" in event["summary_text"]
+    assert result["stm_compressed"] is True
+
+
+def test_recent_raw_context_preserved(monkeypatch, tmp_path):
+    db_path = _prepare_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(stm_module, "STM_TOKEN_THRESHOLD", 1)
+    monkeypatch.setattr(stm_module, "STM_KEEP_RECENT", 2)
+    messages = [
+        HumanMessage(content="old"),
+        SystemMessage(content="system note"),
+        ToolMessage(content="tool call", tool_call_id="search-1"),
+        AIMessage(content="recent reply"),
+    ]
+    state = _base_state(messages)
+    result = stm_compression_node(state, FakeListChatModel(responses=["compressed summary"]))
+
+    compressed = result["messages"]
+    assert any(isinstance(m, ToolMessage) for m in compressed), "Tool message should survive recent window"
+    assert any(isinstance(m, SystemMessage) for m in compressed)
+
+
+def test_snapshot_round_trip_compatible(monkeypatch, tmp_path):
+    db_path = _prepare_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(stm_module, "STM_TOKEN_THRESHOLD", 1)
+    monkeypatch.setattr(stm_module, "STM_KEEP_RECENT", 1)
+    messages = [HumanMessage(content="alpha"), AIMessage(content="beta")]
+    state = _base_state(messages)
+    stm_compression_node(state, FakeListChatModel(responses=["compressed summary"]))
+
+    rows = _read_rows(db_path, "working_context")
+    snapshot = json.loads(rows[-1]["serialized_messages"])
+    restored = messages_from_dict(snapshot)
+    assert restored[-1].content == "beta"
