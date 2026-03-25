@@ -109,3 +109,12 @@ class GlobalState(MessagesState):
     stm_token_count: int
     stm_compressed: bool
     ltm_extraction_done: bool
+
+    # ---- [协同器确认/回退控制] ----
+    pending_workflow_confirmation: bool = False
+    suggested_workflow_id: Optional[str] = None
+    orchestration_mode: Literal["workflow", "dynamic"] = "dynamic"
+    selected_subagents: List[str] = Field(default_factory=list)
+    confirmation_expires_at_turn: Optional[int] = None
+    last_selected_agent_id: Optional[str] = None
+    agent_retry_counters: Dict[str, int] = Field(default_factory=dict)
