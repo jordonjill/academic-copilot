@@ -3,7 +3,7 @@
 - Date: 2026-03-25
 - Project: Academic Copilot
 - Scope: Sub-project 1 of platform modernization (configurable agent/workflow runtime)
-- Status: Approved design draft (ready for implementation planning)
+- Status: MVP-1 implemented (2026-03-25), with post-MVP backlog items retained
 
 ## 1. Background and Goal
 
