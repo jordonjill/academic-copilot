@@ -25,10 +25,13 @@ class ToolGroup(str, Enum):
     WEB_SEARCH = "web_search"      # Tavily + Jina 网页爬取
     ARXIV = "arxiv"                # ArXiv 学术论文搜索
     FILESYSTEM = "filesystem"      # MCP filesystem（运行时注入）
+    DOCX_EXPORT = "docx_export"    # DOCX 导出
+    PDF_EXPORT = "pdf_export"      # PDF 导出
 
     # ── 组合工具包（角色预设）────────────────────────────────────────────────
     RESEARCH = "research"          # WEB_SEARCH + ARXIV
     CRITIQUE = "critique"          # WEB_SEARCH + ARXIV（与 RESEARCH 相同，语义分离）
+    WRITER = "writer"              # FILESYSTEM + DOCX/PDF 导出
 
 
 # 运行时 MCP 工具存储（由 inject_mcp_tools() 填充）
@@ -50,13 +53,18 @@ def get_tools(*groups: ToolGroup) -> List[BaseTool]:
     """
     from src.infrastructure.tools.crawl_search import crawl_search
     from src.infrastructure.tools.arxiv_search import search_arxiv
+    from src.infrastructure.tools.docx_export import export_docx
+    from src.infrastructure.tools.pdf_export import export_pdf
 
     _atom_map: dict[ToolGroup, List[BaseTool]] = {
         ToolGroup.WEB_SEARCH: [crawl_search],
         ToolGroup.ARXIV: [search_arxiv],
         ToolGroup.FILESYSTEM: list(_mcp_registry.get(ToolGroup.FILESYSTEM, [])),
+        ToolGroup.DOCX_EXPORT: [export_docx],
+        ToolGroup.PDF_EXPORT: [export_pdf],
         ToolGroup.RESEARCH: [crawl_search, search_arxiv],
         ToolGroup.CRITIQUE: [crawl_search, search_arxiv],
+        ToolGroup.WRITER: list(_mcp_registry.get(ToolGroup.FILESYSTEM, [])) + [export_docx, export_pdf],
     }
 
     seen: set[str] = set()
@@ -78,7 +86,7 @@ def _critic_tools() -> List[BaseTool]:
     return get_tools(ToolGroup.CRITIQUE)
 
 def _writer_tools() -> List[BaseTool]:
-    return get_tools(ToolGroup.FILESYSTEM)
+    return get_tools(ToolGroup.WRITER)
 
 
 # 延迟绑定属性，在首次 import 后调用时才实际加载
