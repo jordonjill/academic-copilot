@@ -9,9 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.interfaces.api.routes import admin, chat, research, health
-from src.infrastructure.tools.mcp_loader import initialize_mcp_tools
-from src.infrastructure.tools.registry import _init_role_tools
+from src.interfaces.api.routes import admin, chat, health
+from src.interfaces.api.service import reload_runtime_config
+from src.infrastructure.tools.loader import initialize_tools
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -21,12 +21,21 @@ FRONTEND_DIR = BACKEND_DIR.parent / "frontend"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Academic Copilot starting — initializing MCP tools...")
+    logger.info("Academic Copilot starting — initializing tools...")
     try:
-        await initialize_mcp_tools()
-        _init_role_tools()
+        await initialize_tools()
+        runtime_report = reload_runtime_config()
+        failed = runtime_report.get("failed", [])
+        if failed:
+            raise RuntimeError(f"Runtime config validation failed with {len(failed)} issue(s)")
+        logger.info(
+            "Runtime config loaded: %d agents, %d workflows",
+            len(runtime_report["loaded"]["agents"]),
+            len(runtime_report["loaded"]["workflows"]),
+        )
     except Exception as e:
-        logger.warning(f"MCP init failed (non-fatal): {e}")
+        logger.error("Startup validation failed: %s", e)
+        raise
     yield
     logger.info("Academic Copilot shutdown.")
 
@@ -44,7 +53,6 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
 
 app.include_router(chat.router)
-app.include_router(research.router)
 app.include_router(health.router)
 app.include_router(admin.router)
 

@@ -13,8 +13,8 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import os
-from datetime import datetime
-from typing import List, Optional, Tuple
+from datetime import UTC, datetime
+from typing import List, Tuple
 from src.infrastructure.config.config import CONVERSATION_DB
 
 
@@ -99,7 +99,7 @@ class SQLiteStore:
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (session_id, user_id, created_at, topic)
                    VALUES (?, ?, ?, ?)""",
-                (session_id, user_id, datetime.utcnow().isoformat(), topic),
+                (session_id, user_id, datetime.now(UTC).isoformat(), topic),
             )
 
     def save_messages(
@@ -108,7 +108,7 @@ class SQLiteStore:
         messages: List[Tuple[str, str, bool, int]],
         # (role, content, is_backbone, token_estimate)
     ) -> None:
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(UTC).isoformat()
         with _get_conn() as conn:
             conn.executemany(
                 """INSERT INTO messages (session_id, role, content, timestamp, is_backbone, token_estimate)
@@ -120,7 +120,7 @@ class SQLiteStore:
     def save_raw_messages(self, session_id: str, messages: List[Tuple[str, str, int]]) -> None:
         if not messages:
             return
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(UTC).isoformat()
         with _get_conn() as conn:
             conn.executemany(
                 """INSERT INTO raw_messages (session_id, role, content, timestamp, token_estimate)
@@ -136,7 +136,7 @@ class SQLiteStore:
         token_count: int,
         is_compressed: bool,
     ) -> None:
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(UTC).isoformat()
         with _get_conn() as conn:
             conn.execute(
                 """INSERT INTO working_context (session_id, serialized_messages, token_count, is_compressed, created_at)
@@ -154,7 +154,7 @@ class SQLiteStore:
         summary_version: str,
     ) -> None:
         digest = hashlib.sha256(summary_text.encode("utf-8")).hexdigest()
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(UTC).isoformat()
         with _get_conn() as conn:
             conn.execute(
                 """INSERT INTO compression_events
@@ -168,7 +168,7 @@ class SQLiteStore:
             conn.execute(
                 """INSERT INTO ltm_facts (user_id, session_id, fact_type, fact_content, extracted_at)
                    VALUES (?, ?, ?, ?, ?)""",
-                (user_id, session_id, fact_type, fact_content, datetime.utcnow().isoformat()),
+                (user_id, session_id, fact_type, fact_content, datetime.now(UTC).isoformat()),
             )
 
     def get_session_messages(self, session_id: str, backbone_only: bool = False) -> List[sqlite3.Row]:
@@ -182,6 +182,16 @@ class SQLiteStore:
                 "SELECT * FROM messages WHERE session_id=? ORDER BY id",
                 (session_id,),
             ).fetchall()
+
+    def get_latest_working_context_snapshot(self, session_id: str) -> sqlite3.Row | None:
+        with _get_conn() as conn:
+            return conn.execute(
+                """SELECT * FROM working_context
+                   WHERE session_id=?
+                   ORDER BY id DESC
+                   LIMIT 1""",
+                (session_id,),
+            ).fetchone()
 
     def update_session_status(self, session_id: str, status: str) -> None:
         with _get_conn() as conn:

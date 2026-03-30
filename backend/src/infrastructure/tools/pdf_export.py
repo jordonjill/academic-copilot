@@ -4,10 +4,12 @@ PDF export tool.
 from __future__ import annotations
 
 import os
+import logging
 from pathlib import Path
 
 from langchain_core.tools import tool
 
+logger = logging.getLogger(__name__)
 
 def _resolve_output_path(output_path: str) -> Path:
     base_dir = Path(os.getenv("EXPORT_BASE_DIR", "data/exports")).expanduser()
@@ -44,6 +46,7 @@ def export_pdf(title: str, content: str, output_path: str) -> dict[str, str]:
         pdfmetrics.registerFont(UnicodeCIDFont(font_name))
         active_font = font_name
     except Exception:
+        logger.debug("Unicode font unavailable, fallback to Helvetica.")
         active_font = "Helvetica"
 
     if title:

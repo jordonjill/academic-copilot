@@ -1,52 +1,45 @@
 # Backend (Academic Copilot)
 
-FastAPI backend for Academic Copilot.
+FastAPI backend for a config-driven supervisor/subagent/workflow runtime.
 
 ## Architecture
 
-The backend follows a lightweight DDD-style layering under `src/`:
-
-- `domain/`: core state models and domain entities
-- `application/`: workflow orchestration and agent logic
-- `infrastructure/`: external integrations (LLM/search/MCP/memory/persistence/config)
-- `interfaces/`: API adapters (FastAPI routes, DTOs, session/auth glue)
+- `domain/`: runtime state schema
+- `application/runtime/`: spec models, registry, runtime engine, workflow guardrail
+- `infrastructure/`: tools, memory, config, persistence
+- `interfaces/api/`: HTTP routes and service wiring
 
 ## Directory Layout
 
 ```text
 backend/
 ├── main.py
-├── pyproject.toml
-├── uv.lock
-├── .env.example
 ├── config/
 │   ├── agents/
-│   └── workflows/
-├── data/
-└── src/
-    ├── domain/
-    │   └── state/
-    ├── application/
-    │   ├── agents/
-    │   ├── workflows/
-    │   └── graph.py
-    ├── infrastructure/
-    │   ├── config/
-    │   ├── memory/
-    │   └── tools/
-    └── interfaces/
-        └── api/
-            └── routes/
+│   ├── workflows/
+│   └── tools.yaml
+├── src/
+│   ├── application/
+│   │   └── runtime/
+│   ├── domain/
+│   │   └── state/
+│   ├── infrastructure/
+│   │   ├── config/
+│   │   ├── memory/
+│   │   └── tools/
+│   └── interfaces/
+│       └── api/
+└── data/
 ```
 
 ## Environment Variables
 
-Copy `.env.example` to `.env`:
+Copy `.env.example` to `.env` and set:
 
 - `ACCESS_KEY`
+- `OPENAI_API_KEY`
 - `TAVILY_API_KEY`
 - `JINA_API_KEY`
-- `OPENAI_API_KEY`
 - `GOOGLE_API_KEY`
 - `ZOTERO_API_KEY` (optional)
 
@@ -60,7 +53,7 @@ uv sync
 uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-The backend serves frontend static files from `../frontend` at:
+The backend serves frontend static files from `../frontend`:
 
 - `/` -> `frontend/index.html`
 - `/static/*` -> files under `frontend/`
@@ -68,39 +61,48 @@ The backend serves frontend static files from `../frontend` at:
 ## API Endpoints
 
 - `POST /chat` (Bearer auth)
-  - accepts optional `workflow_id`
-- `POST /research/start` (Bearer auth)
-- `GET /research/status/{session_id}` (Bearer auth)
-- `WS /ws/{session_id}?access_key=...`
-- `GET /health?model_type=...` (Bearer auth)
-- `GET /sessions` (Bearer auth)
+  - request: `message`, optional `workflow_id`, optional `session_id`, optional `user_id`
+- `GET /health` (Bearer auth)
 - `POST /admin/reload` (Bearer auth)
+  - reload tools + runtime config
+- `POST /admin/reload-runtime` (Bearer auth)
+- `POST /admin/reload-tools` (Bearer auth)
 
-## Workflow Routing Behavior
+## Config & Validation
 
-- Default proposal routing uses `proposal_v2`.
-- Set `PROPOSAL_V2_ROLLBACK=1` to route proposal requests back to legacy `proposal_workflow`.
-- `POST /chat` with explicit `workflow_id: "proposal_v2"` also respects the rollback switch and maps to legacy workflow when enabled.
+Runtime config is loaded from:
 
-## Runtime Config Reload
+- `backend/config/agents/*.yaml`
+- `backend/config/workflows/*.yaml`
 
-- Runtime specs are loaded from:
-  - `backend/config/agents/*.yaml`
-  - `backend/config/workflows/*.yaml`
-- `POST /admin/reload` triggers config revalidation and returns:
-  - `config_version`
-  - loaded agents/workflows
-  - failed objects list
+Tools config is loaded from:
 
-## Confirmation and Dynamic Mode
+- `backend/config/tools.yaml`
 
-- Supervisor can suggest workflows and wait for confirmation.
-- If confirmation is pending and user sends a new non-confirmation request, suggestion is discarded and mode switches to dynamic execution.
-- Dynamic mode enforces same-agent retry caps; when capped with no alternative, runtime marks clarification required.
+Startup and runtime reload perform binding validation:
 
-## Memory Pipeline (MVP-1)
+- Agent `tools` must reference enabled `tool_id` entries in `tools.yaml`
+- Workflow `agent` nodes must reference existing `agent_id`
 
-- Persist all raw Human/AI turns to SQLite (`raw_messages`).
-- Persist per-turn working context snapshots (`working_context`).
-- When STM threshold is exceeded, compress historical context while preserving recent context and log audit entries (`compression_events`).
-- Full historical records remain intact even when working context is compressed.
+Validation issues are returned in reload responses under `data.runtime.failed`.
+At startup, validation issues stop the app from booting.
+
+## Runtime Behavior
+
+- Supervisor can:
+  - answer directly
+  - run subagents
+  - start a workflow
+- Explicit `workflow_id` in `/chat` runs that workflow directly.
+- Workflow runtime enforces edge constraints and step/loop limits.
+
+## Memory Pipeline
+
+Memory is on the main chat path:
+
+- Before each turn: load latest `working_context` from SQLite into runtime messages
+- After each turn: persist raw/backbone/context snapshots and apply STM compression if threshold exceeded
+- Compression and history tables:
+  - `raw_messages`
+  - `working_context`
+  - `compression_events`

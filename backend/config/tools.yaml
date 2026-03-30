@@ -1,0 +1,48 @@
+version: "1.0"
+
+servers:
+  filesystem:
+    transport: stdio
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/jordon/papers"]
+    enabled: true
+
+  zotero:
+    transport: stdio
+    command: "python"
+    args: ["-m", "src.infrastructure.tools.zotero_mcp_server"]
+    env:
+      ZOTERO_API_KEY: "${ZOTERO_API_KEY}"
+    enabled: false
+
+tools:
+  web_search:
+    transport: internal
+    module: "src.infrastructure.tools.crawl_search"
+    attribute: "crawl_search"
+    enabled: true
+
+  arxiv:
+    transport: internal
+    module: "src.infrastructure.tools.arxiv_search"
+    attribute: "search_arxiv"
+    enabled: true
+
+  docx_export:
+    transport: internal
+    module: "src.infrastructure.tools.docx_export"
+    attribute: "export_docx"
+    enabled: true
+
+  pdf_export:
+    transport: internal
+    module: "src.infrastructure.tools.pdf_export"
+    attribute: "export_pdf"
+    enabled: true
+
+  filesystem:
+    transport: mcp
+    server: filesystem
+    # Optional. If omitted, ToolManager picks the first tool exposed by this server.
+    tool_name: ""
+    enabled: true

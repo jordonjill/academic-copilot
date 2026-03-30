@@ -4,38 +4,46 @@ entry_node: planner
 nodes:
   planner:
     type: agent
-    agent_id: planner_proposal
+    agent_id: planner
   researcher:
     type: agent
-    agent_id: researcher_proposal
+    agent_id: researcher
   synthesizer:
     type: agent
-    agent_id: synthesizer_proposal
+    agent_id: synthesizer
   critic:
     type: agent
-    agent_id: critic_proposal
+    agent_id: critic
   reporter:
     type: agent
-    agent_id: reporter_proposal
+    agent_id: reporter
   end:
     type: terminal
 edges:
   - from: planner
     to: researcher
-    condition: search
+    condition:
+      field: artifacts.research_plan.step_type
+      equals: search
   - from: planner
     to: synthesizer
-    condition: synthesize
+    condition:
+      field: artifacts.research_plan.step_type
+      equals: synthesize
   - from: researcher
     to: planner
   - from: synthesizer
     to: critic
   - from: critic
     to: reporter
-    condition: valid
+    condition:
+      field: artifacts.research_critic.is_valid
+      equals: true
   - from: critic
     to: synthesizer
-    condition: revise
+    condition:
+      field: artifacts.research_critic.is_valid
+      equals: false
   - from: reporter
     to: end
 limits:

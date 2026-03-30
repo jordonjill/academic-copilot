@@ -1,7 +1,7 @@
 """
 LTM（长期记忆）事实提取管道。
 
-触发时机：STM 压缩节点中通过 asyncio.ensure_future() 异步调用，不阻塞主流程。
+触发时机：STM 压缩节点中通过 event-loop task 异步调用，不阻塞主流程。
 
 流程：
   1. 将对话主干拼接为文本
@@ -13,18 +13,20 @@ LTM（长期记忆）事实提取管道。
 from __future__ import annotations
 import asyncio
 import json
+import logging
 import os
-from datetime import datetime
-from typing import List, Dict, Any
+from datetime import UTC, datetime
+from typing import List, Dict
 
 from langchain_core.language_models import BaseLanguageModel
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_core.messages import BaseMessage, HumanMessage
 
-from src.infrastructure.config.config import USERS_DIR
+from src.infrastructure.config.config import MEMORY_PIPELINE_ENABLED, USERS_DIR
 from src.infrastructure.config.prompt import LTM_EXTRACTION_PROMPT
 
 
 _MAX_PAST_TOPICS = 20  # past_topics FIFO 滚动上限
+logger = logging.getLogger(__name__)
 
 
 def _build_backbone_text(backbone: List[BaseMessage]) -> str:
@@ -89,7 +91,7 @@ def _write_memory_md(user_id: str, profile: Dict[str, List[str]]) -> str:
     os.makedirs(user_dir, exist_ok=True)
     profile_path = os.path.join(user_dir, "memory.md")
 
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(UTC).isoformat()
     lines = [
         "# User Research Profile",
         f"*Last Updated: {now}*",
@@ -129,12 +131,15 @@ async def extract_and_update_ltm(
     异步 LTM 提取入口。
     在 asyncio 事件循环中通过 run_in_executor 调用同步 LLM。
     """
+    if not MEMORY_PIPELINE_ENABLED:
+        return
+
     try:
         backbone_text = _build_backbone_text(backbone)
         if not backbone_text.strip():
             return
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         # 在线程池中运行同步 LLM 调用
         def _call_llm():
@@ -151,7 +156,7 @@ async def extract_and_update_ltm(
             import re
             m = re.search(r'\{.*\}', raw_json, re.DOTALL)
             if not m:
-                print(f"[LTM] JSON parse failed: {raw_json[:200]}")
+                logger.warning("[LTM] JSON parse failed: %s", raw_json[:200])
                 return
             new_facts = json.loads(m.group())
 
@@ -168,7 +173,7 @@ async def extract_and_update_ltm(
                 if item.strip():
                     store.save_ltm_fact(user_id, session_id, fact_type, item)
 
-        print(f"[LTM] Updated memory.md for user {user_id}")
+        logger.info("[LTM] Updated memory.md for user %s", user_id)
 
     except Exception as e:
-        print(f"[LTM] Extraction failed for user {user_id}: {e}")
+        logger.exception("[LTM] Extraction failed for user %s: %s", user_id, e)

@@ -20,22 +20,17 @@ async def chat(
     _: str = Depends(verify_access_key),
 ) -> ChatResponse:
     """
-    Supervisor 路由的统一对话端点。
+    Supervisor 统一调度端点。
 
-    意图自动分发：
-      - PROPOSAL_GEN  → ProposalWorkflow
-      - SURVEY_WRITE  → SurveyWorkflow
-      - CHITCHAT / CLARIFY_NEEDED → chitchat_node
+    主 Supervisor 可直接回答、调用子 Agent，或启动 Workflow。
     """
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
-    if request.model_type not in ("ollama", "gemini", "openai"):
-        raise HTTPException(status_code=400, detail=f"Unsupported model_type: {request.model_type}")
 
     session_id = request.session_id or str(uuid.uuid4())
 
     try:
-        copilot = create_copilot(request.model_type)
+        copilot = create_copilot()
         result = await copilot.chat_async(
             user_message=request.message,
             user_id=request.user_id,

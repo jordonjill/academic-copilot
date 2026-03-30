@@ -14,8 +14,9 @@ STM（短期记忆）压缩管道。
 from __future__ import annotations
 import asyncio
 import json
-from datetime import datetime
-from typing import Dict, List
+import logging
+from datetime import UTC, datetime
+from typing import Any, Dict, List
 
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.messages import (
@@ -27,12 +28,16 @@ from langchain_core.messages import (
     message_to_dict,
 )
 
-from src.domain.state import GlobalState
-from src.infrastructure.config.config import STM_KEEP_RECENT, STM_TOKEN_THRESHOLD
+from src.infrastructure.config.config import (
+    MEMORY_PIPELINE_ENABLED,
+    STM_KEEP_RECENT,
+    STM_TOKEN_THRESHOLD,
+)
 from src.infrastructure.config.prompt import STM_COMPRESSION_PROMPT
 from src.infrastructure.memory.sqlite_store import SQLiteStore
 
 COMPRESSION_SUMMARY_VERSION = "stm-v1"
+logger = logging.getLogger(__name__)
 
 
 def _estimate_tokens(messages: List[BaseMessage]) -> int:
@@ -101,8 +106,11 @@ def _normalize_summary_text(summary_response: object) -> str:
         return str(content)
 
 
-def stm_compression_node(state: GlobalState, llm: BaseLanguageModel) -> Dict:
-    """STM 压缩节点：每轮工作流结束后调用。"""
+def stm_compression_node(state: dict[str, Any], llm: BaseLanguageModel) -> Dict[str, Any]:
+    """STM 压缩节点：每轮 chat turn 结束后调用。"""
+    if not MEMORY_PIPELINE_ENABLED:
+        return {"stm_token_count": 0, "stm_compressed": False, "memory_pipeline_skipped": True}
+
     messages: List[BaseMessage] = list(state.get("messages", []))
     session_id = state.get("session_id", "unknown")
     user_id = state.get("user_id", "default")
@@ -149,7 +157,7 @@ def stm_compression_node(state: GlobalState, llm: BaseLanguageModel) -> Dict:
             summary_response = compression_chain.invoke({"conversation_to_compress": conversation_text})
             summary_text = _normalize_summary_text(summary_response)
 
-            header = f"[Compressed Context — {datetime.utcnow().strftime('%Y-%m-%d')}]"
+            header = f"[Compressed Context — {datetime.now(UTC).strftime('%Y-%m-%d')}]"
             compressed_messages = [
                 SystemMessage(content=f"{header}\n{summary_text}")
             ] + recent_messages
@@ -170,7 +178,7 @@ def stm_compression_node(state: GlobalState, llm: BaseLanguageModel) -> Dict:
                 from src.infrastructure.memory.ltm import extract_and_update_ltm
 
                 loop = asyncio.get_running_loop()
-                asyncio.ensure_future(
+                loop.create_task(
                     extract_and_update_ltm(
                         user_id=user_id,
                         session_id=session_id,
@@ -181,7 +189,7 @@ def stm_compression_node(state: GlobalState, llm: BaseLanguageModel) -> Dict:
             except (RuntimeError, ModuleNotFoundError):
                 pass
             except Exception as exc:  # pragma: no cover - best effort
-                print(f"[STM] LTM async task scheduling failed: {exc}")
+                logger.exception("[STM] LTM async task scheduling failed: %s", exc)
         else:
             store.save_compression_event(
                 session_id=session_id,

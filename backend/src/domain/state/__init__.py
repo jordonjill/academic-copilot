@@ -1,4 +1,11 @@
 from .schema import (
+    RuntimeArtifacts,
+    RuntimeContext,
+    RuntimeErrors,
+    RuntimeIO,
+    RuntimeInput,
+    RuntimeMeta,
+    RuntimeOutput,
     GlobalState,
     UserProfile,
     IntentClassification,
@@ -9,12 +16,15 @@ from .schema import (
     FinalProposal,
 )
 
-# 向后兼容别名
-GraphState = GlobalState
-
 __all__ = [
+    "RuntimeInput",
+    "RuntimeContext",
+    "RuntimeMeta",
+    "RuntimeIO",
+    "RuntimeArtifacts",
+    "RuntimeOutput",
+    "RuntimeErrors",
     "GlobalState",
-    "GraphState",
     "UserProfile",
     "IntentClassification",
     "ResearchPlan",

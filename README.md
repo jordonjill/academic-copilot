@@ -40,5 +40,5 @@ For backend details, see [backend/README.md](backend/README.md).
 
 Key backend additions in MVP-1:
 - config-driven agent/workflow specs under `backend/config/`
-- `POST /admin/reload` for runtime config reload
+- `POST /admin/reload` for tools + runtime reload (`/admin/reload-runtime`, `/admin/reload-tools` also available)
 - `POST /chat` supports optional `workflow_id`

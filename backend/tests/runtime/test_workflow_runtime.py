@@ -1,12 +1,10 @@
 import pytest
 from langchain_core.tools import BaseTool
 
-from src.application.graph import resolve_supervisor_route
-from src.application.agents import AgentMode
-from src.application.runtime import agent_runtime
+from src.application.runtime import agent_factory as agent_runtime
+from src.application.runtime.agent_factory import AgentMode
 from src.application.runtime.spec_models import AgentSpec, WorkflowSpec
-from src.application.runtime.workflow_runtime import WorkflowRuntime
-from src.domain.state.schema import ResearchCritic, ResearchPlan
+from src.application.runtime.workflow_router import WorkflowRuntime
 
 
 class DummyTool(BaseTool):
@@ -189,69 +187,29 @@ def workflow_runtime(proposal_workflow_spec):
 @pytest.fixture
 def proposal_state():
     return {
-        "route_key": "search",
-        "research_plan": ResearchPlan(has_enough_content=True, step_type="search", query="q"),
-        "research_critic": ResearchCritic(is_valid=True),
         "_step_count": 0,
         "_loop_count": 0,
     }
 
 
-def test_workflow_routes_based_on_route_key(workflow_runtime, proposal_state):
-    proposal_state["route_key"] = "search"
-    next_node = workflow_runtime.next_node("planner", proposal_state)
-    assert next_node == "researcher"
+def test_allowed_next_nodes_returns_all_candidates(workflow_runtime):
+    assert workflow_runtime.allowed_next_nodes("planner") == ["researcher", "synthesizer"]
+    assert workflow_runtime.allowed_next_nodes("researcher") == ["planner"]
 
 
-def test_route_key_wins_over_research_plan_step_type(workflow_runtime, proposal_state):
-    proposal_state["route_key"] = "synthesize"
-    proposal_state["research_plan"] = ResearchPlan(
-        has_enough_content=True, step_type="search", query="q"
-    )
-    next_node = workflow_runtime.next_node("planner", proposal_state)
-    assert next_node == "synthesizer"
-
-
-def test_workflow_routes_using_research_plan_when_route_key_missing(
-    workflow_runtime, proposal_state
-):
-    proposal_state["route_key"] = ""
-    proposal_state["research_plan"] = ResearchPlan(
-        has_enough_content=True, step_type="synthesize", query="q"
-    )
-    next_node = workflow_runtime.next_node("planner", proposal_state)
-    assert next_node == "synthesizer"
-
-
-def test_default_edge_used_when_no_condition_matches(workflow_runtime, proposal_state):
+def test_next_node_returns_first_allowed_edge(workflow_runtime, proposal_state):
+    assert workflow_runtime.next_node("planner", proposal_state) == "researcher"
     assert workflow_runtime.next_node("researcher", proposal_state) == "planner"
 
 
-def test_dict_condition_routing(workflow_runtime, proposal_state):
-    proposal_state["research_critic"] = ResearchCritic(is_valid=False)
-    assert workflow_runtime.next_node("critic_dict", proposal_state) == "synthesizer"
-    proposal_state["research_critic"] = ResearchCritic(is_valid=True)
-    assert workflow_runtime.next_node("critic_dict", proposal_state) == "reporter"
+def test_assert_transition_allowed_accepts_configured_edge(workflow_runtime):
+    workflow_runtime.assert_transition_allowed("planner", "researcher")
+    workflow_runtime.assert_transition_allowed("planner", "synthesizer")
 
 
-def test_critic_string_conditions_from_research_critic_state(workflow_runtime, proposal_state):
-    proposal_state["route_key"] = ""
-    proposal_state["research_critic"] = ResearchCritic(is_valid=True)
-    assert workflow_runtime.next_node("critic", proposal_state) == "reporter"
-    proposal_state["research_critic"] = ResearchCritic(is_valid=False)
-    assert workflow_runtime.next_node("critic", proposal_state) == "synthesizer"
-
-
-def test_conditional_edges_take_precedence_over_unconditional(workflow_runtime, proposal_state):
-    proposal_state["route_key"] = "use_cond"
-    assert workflow_runtime.next_node("dual", proposal_state) == "reporter"
-    proposal_state["route_key"] = "other"
-    assert workflow_runtime.next_node("dual", proposal_state) == "end"
-
-
-def test_runtime_error_when_conditions_exist_but_none_match(workflow_runtime, proposal_state):
-    with pytest.raises(RuntimeError):
-        workflow_runtime.next_node("strict", proposal_state)
+def test_assert_transition_allowed_rejects_out_of_graph_transition(workflow_runtime):
+    with pytest.raises(RuntimeError, match="Invalid transition"):
+        workflow_runtime.assert_transition_allowed("planner", "reporter")
 
 
 def test_next_node_raises_without_valid_transition(workflow_runtime, proposal_state):
@@ -269,21 +227,3 @@ def test_enforce_limits_raises_on_loop_limit(workflow_runtime, proposal_state):
     proposal_state["_loop_count"] = workflow_runtime.spec.limits.get("max_loops", 6)
     with pytest.raises(RuntimeError, match="max_loops"):
         workflow_runtime.enforce_limits(proposal_state)
-
-
-def test_default_proposal_route_resolves_to_proposal_v2_path(monkeypatch):
-    monkeypatch.delenv("PROPOSAL_V2_ROLLBACK", raising=False)
-    state = {
-        "current_intent": type("Intent", (), {"intent": "PROPOSAL_GEN"})(),
-    }
-
-    assert resolve_supervisor_route(state) == "proposal_v2"
-
-
-def test_rollback_env_toggles_proposal_route_to_legacy_path(monkeypatch):
-    monkeypatch.setenv("PROPOSAL_V2_ROLLBACK", "1")
-    state = {
-        "current_intent": type("Intent", (), {"intent": "PROPOSAL_GEN"})(),
-    }
-
-    assert resolve_supervisor_route(state) == "proposal_workflow"

@@ -4,10 +4,12 @@ ArXiv 搜索工具（使用 arxiv Python 库）。
 依赖：pip install arxiv
 """
 from __future__ import annotations
-import os
+import logging
 from typing import List, Dict, Any
 
 from langchain_core.tools import tool
+
+logger = logging.getLogger(__name__)
 
 
 @tool
@@ -39,6 +41,7 @@ def search_arxiv(query: str, max_results: int = 10) -> List[Dict[str, Any]]:
         return results
 
     except ImportError:
-        return [{"error": "arxiv package not installed. Run: pip install arxiv"}]
+        return [{"error_code": "ARXIV_NOT_INSTALLED", "error_message": "arxiv package not installed. Run: pip install arxiv"}]
     except Exception as e:
-        return [{"error": f"ArXiv search failed: {repr(e)}"}]
+        logger.exception("ArXiv search failed for query=%s", query)
+        return [{"error_code": "ARXIV_SEARCH_FAILED", "error_message": repr(e)}]
