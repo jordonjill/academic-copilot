@@ -186,8 +186,10 @@ def stm_compression_node(state: dict[str, Any], llm: BaseLanguageModel) -> Dict[
                         llm=llm,
                     )
                 )
-            except (RuntimeError, ModuleNotFoundError):
-                pass
+            except RuntimeError:
+                logger.debug("[STM] No running event loop, skip LTM async extraction")
+            except ModuleNotFoundError as exc:
+                logger.warning("[STM] LTM module unavailable: %s", exc)
             except Exception as exc:  # pragma: no cover - best effort
                 logger.exception("[STM] LTM async task scheduling failed: %s", exc)
         else:

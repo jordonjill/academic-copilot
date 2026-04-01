@@ -35,6 +35,7 @@ class ToolSpec:
     attribute: str = ""
     server: str = ""
     tool_name: str = ""
+    settings: dict[str, Any] | None = None
 
 
 def _default_catalog_path() -> Path:
@@ -105,6 +106,7 @@ class ToolManager:
                     attribute=str(raw.get("attribute", "")),
                     server=str(raw.get("server", "")),
                     tool_name=str(raw.get("tool_name", "")),
+                    settings=dict(raw.get("settings", {}) or {}),
                 )
 
     def _load_internal_tool(self, spec: ToolSpec) -> BaseTool | None:
@@ -268,6 +270,13 @@ class ToolManager:
     def get_tool(self, tool_id: str) -> BaseTool | None:
         self.ensure_loaded()
         return self._tools.get(tool_id)
+
+    def get_tool_settings(self, tool_id: str) -> dict[str, Any]:
+        self.ensure_loaded()
+        spec = self._tool_specs.get(tool_id)
+        if spec is None or not isinstance(spec.settings, dict):
+            return {}
+        return dict(spec.settings)
 
     def get_catalog_tool_ids(self, *, enabled_only: bool = True) -> set[str]:
         payload = self._load_catalog_payload()

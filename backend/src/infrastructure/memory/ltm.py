@@ -6,15 +6,17 @@ LTM（长期记忆）事实提取管道。
 流程：
   1. 将对话主干拼接为文本
   2. LLM with_structured_output → 6 类事实 JSON
-  3. Union 去重追加到现有 UserProfile
+  3. Union 去重追加到现有用户画像字段
   4. 序列化为 memory.md 写入 data/users/{user_id}/
   5. 写入 SQLite ltm_facts 表
 """
 from __future__ import annotations
+import atexit
 import asyncio
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import List, Dict
 
@@ -27,6 +29,28 @@ from src.infrastructure.config.prompt import LTM_EXTRACTION_PROMPT
 
 _MAX_PAST_TOPICS = 20  # past_topics FIFO 滚动上限
 logger = logging.getLogger(__name__)
+
+
+def _ltm_max_workers() -> int:
+    raw = os.getenv("LTM_MAX_WORKERS", "2").strip()
+    try:
+        workers = int(raw)
+    except ValueError:
+        workers = 2
+    return max(1, workers)
+
+
+_LTM_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_ltm_max_workers(),
+    thread_name_prefix="ltm-worker",
+)
+
+
+def _shutdown_ltm_executor() -> None:
+    _LTM_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+
+
+atexit.register(_shutdown_ltm_executor)
 
 
 def _build_backbone_text(backbone: List[BaseMessage]) -> str:
@@ -147,7 +171,7 @@ async def extract_and_update_ltm(
             response = chain.invoke({"conversation_backbone": backbone_text})
             return response.content if hasattr(response, "content") else str(response)
 
-        raw_json = await loop.run_in_executor(None, _call_llm)
+        raw_json = await loop.run_in_executor(_LTM_EXECUTOR, _call_llm)
 
         # 解析 JSON
         try:

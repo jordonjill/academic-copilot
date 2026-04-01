@@ -3,14 +3,17 @@ from __future__ import annotations
 import os
 
 
-def _env_int(name: str, default: int) -> int:
+def _env_int(name: str, default: int, *, minimum: int | None = None) -> int:
     raw = os.getenv(name)
     if raw is None or raw.strip() == "":
         return default
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError:
         return default
+    if minimum is not None and value < minimum:
+        return default
+    return value
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -20,14 +23,9 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-# ===== Runtime limits =====
-MAX_SEARCHES = _env_int("MAX_SEARCHES", 5)
-MAX_VALIDATION_ATTEMPTS = _env_int("MAX_VALIDATION_ATTEMPTS", 3)
-MAX_TAVILY_SEARCHES = _env_int("MAX_TAVILY_SEARCHES", 10)
-
 # ===== STM/LTM =====
-STM_TOKEN_THRESHOLD = _env_int("STM_TOKEN_THRESHOLD", 6000)
-STM_KEEP_RECENT = _env_int("STM_KEEP_RECENT", 6)
+STM_TOKEN_THRESHOLD = _env_int("STM_TOKEN_THRESHOLD", 6000, minimum=1)
+STM_KEEP_RECENT = _env_int("STM_KEEP_RECENT", 6, minimum=0)
 
 # Memory pipeline switch:
 # When enabled, chat requests load working context from SQLite and persist

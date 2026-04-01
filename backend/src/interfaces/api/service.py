@@ -43,7 +43,8 @@ _APP_LOCK = threading.Lock()
 _COPILOT_APP: Optional["AcademicCopilotApp"] = None
 _DEFAULT_CHAT_TURN_TIMEOUT_SECONDS = 120.0
 _MAX_LAST_STATES = 128
-_TIMEOUT_RELATION_WARNED = False
+_TIMEOUT_RELATION_WARNED_FOR: tuple[float, float, float] | None = None
+_TIMEOUT_RELATION_LOCK = threading.Lock()
 
 
 def get_config_registry() -> ConfigRegistry:
@@ -162,10 +163,7 @@ class AcademicCopilotApp:
         session_id: Optional[str] = None,
         workflow_id: Optional[str] = None,
         websocket_send: Optional[Callable] = None,
-        recursion_limit: int = 25,
     ) -> Dict[str, Any]:
-        del recursion_limit  # 简化 runtime 不依赖递归配置
-
         sid = session_id or str(uuid.uuid4())
         started = perf_counter()
         _log_event(
@@ -401,11 +399,19 @@ def _chat_turn_timeout_seconds() -> float:
 
 
 def _warn_timeout_misconfiguration(chat_timeout: float) -> None:
-    global _TIMEOUT_RELATION_WARNED
-    if _TIMEOUT_RELATION_WARNED:
-        return
     supervisor_timeout = read_env_float("SUPERVISOR_MAX_WALL_TIME_SECONDS", 180.0)
     workflow_timeout = read_env_float("WORKFLOW_MAX_WALL_TIME_SECONDS", 300.0)
+    key = (
+        round(chat_timeout, 3),
+        round(supervisor_timeout, 3),
+        round(workflow_timeout, 3),
+    )
+    global _TIMEOUT_RELATION_WARNED_FOR
+    with _TIMEOUT_RELATION_LOCK:
+        if _TIMEOUT_RELATION_WARNED_FOR == key:
+            return
+        _TIMEOUT_RELATION_WARNED_FOR = key
+
     min_runtime_timeout = min(supervisor_timeout, workflow_timeout)
     if chat_timeout >= min_runtime_timeout:
         logger.warning(
@@ -416,7 +422,6 @@ def _warn_timeout_misconfiguration(chat_timeout: float) -> None:
             supervisor_timeout,
             workflow_timeout,
         )
-    _TIMEOUT_RELATION_WARNED = True
 
 
 def warn_timeout_misconfiguration_once() -> None:

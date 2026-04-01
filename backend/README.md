@@ -4,7 +4,6 @@ FastAPI backend for a config-driven supervisor/subagent/workflow runtime.
 
 ## Architecture
 
-- `domain/`: runtime state schema
 - `application/runtime/`: spec models, registry, runtime engine, workflow guardrail
 - `infrastructure/`: tools, memory, config, persistence
 - `interfaces/api/`: HTTP routes and service wiring
@@ -21,8 +20,6 @@ backend/
 ├── src/
 │   ├── application/
 │   │   └── runtime/
-│   ├── domain/
-│   │   └── state/
 │   ├── infrastructure/
 │   │   ├── config/
 │   │   ├── memory/
@@ -31,6 +28,13 @@ backend/
 │       └── api/
 └── data/
 ```
+
+## Schema Layering Convention
+
+- Runtime state contract lives in `application/runtime/state_types.py` (framework-level, generic).
+- API request/response schema lives in `interfaces/api/schemas.py` (transport boundary).
+- Config schema for LLM/Agent/Workflow lives in `application/runtime/spec_models.py` (YAML contract).
+- Workflow-specific or business-specific structured schema must live with the owning module/workflow, not in a global shared domain layer.
 
 ## Environment Variables
 

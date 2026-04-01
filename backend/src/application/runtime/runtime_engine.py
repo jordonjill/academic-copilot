@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import threading
+from collections import OrderedDict
 from time import perf_counter
 from typing import Any, Callable, Dict, Optional
 
@@ -37,7 +38,9 @@ class RuntimeEngine:
 
     def __init__(self, registry: ConfigRegistry) -> None:
         self.registry = registry
-        self._llm_cache: dict[tuple[str, str, str, str, str], BaseLanguageModel] = {}
+        self._llm_cache: OrderedDict[tuple[str, str, str, str, str], BaseLanguageModel] = OrderedDict()
+        self._llm_cache_max_size = max(1, _read_int_env("LLM_CACHE_MAX_SIZE", 128))
+        self._chain_context_messages_window = max(1, _read_int_env("CHAIN_CONTEXT_MESSAGES_WINDOW", 12))
         self._llm_cache_lock = threading.Lock()
         self._llm_cache_hits = 0
         self._llm_cache_misses = 0
@@ -50,11 +53,16 @@ class RuntimeEngine:
     ) -> Dict[str, Any]:
         self._ensure_registry_loaded()
         state["runtime"]["status"] = "running"
-        self._run_supervisor_loop(
-            state=state,
-            requested_workflow_id=requested_workflow_id,
-            step_callback=step_callback,
-        )
+        try:
+            self._run_supervisor_loop(
+                state=state,
+                requested_workflow_id=requested_workflow_id,
+                step_callback=step_callback,
+            )
+        except Exception as exc:
+            state["runtime"]["status"] = "failed"
+            state["errors"]["last_error"] = str(exc)
+            raise
 
         state["runtime"]["status"] = "completed"
         return self._build_result(state)
@@ -539,6 +547,7 @@ class RuntimeEngine:
             cached = self._llm_cache.get(key)
             if cached is not None:
                 self._llm_cache_hits += 1
+                self._llm_cache.move_to_end(key)
                 return cached
             self._llm_cache_misses += 1
 
@@ -557,7 +566,10 @@ class RuntimeEngine:
             existing = self._llm_cache.get(key)
             if existing is not None:
                 self._llm_cache_hits += 1
+                self._llm_cache.move_to_end(key)
                 return existing
+            if len(self._llm_cache) >= self._llm_cache_max_size:
+                self._llm_cache.popitem(last=False)
             self._llm_cache[key] = llm
         return llm
 
@@ -631,7 +643,7 @@ class RuntimeEngine:
 
     def _messages_to_text(self, messages: list[BaseMessage]) -> str:
         lines: list[str] = []
-        for message in messages[-12:]:
+        for message in messages[-self._chain_context_messages_window:]:
             role = message.__class__.__name__.replace("Message", "").lower() or "message"
             content = self._coerce_text(message)
             lines.append(f"{role}: {content}")
@@ -687,6 +699,7 @@ class RuntimeEngine:
         with self._llm_cache_lock:
             return {
                 "size": len(self._llm_cache),
+                "max_size": self._llm_cache_max_size,
                 "hits": self._llm_cache_hits,
                 "misses": self._llm_cache_misses,
             }

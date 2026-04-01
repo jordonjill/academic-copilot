@@ -13,15 +13,41 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import os
+import threading
 from datetime import UTC, datetime
 from typing import List, Tuple
 from src.infrastructure.config.config import CONVERSATION_DB
 
 
+_THREAD_LOCAL = threading.local()
+
+
+def _db_path() -> str:
+    return os.path.abspath(CONVERSATION_DB)
+
+
 def _get_conn() -> sqlite3.Connection:
-    os.makedirs(os.path.dirname(CONVERSATION_DB), exist_ok=True)
-    conn = sqlite3.connect(CONVERSATION_DB, check_same_thread=False)
+    path = _db_path()
+    conn = getattr(_THREAD_LOCAL, "conn", None)
+    current_path = getattr(_THREAD_LOCAL, "path", None)
+
+    if isinstance(conn, sqlite3.Connection) and current_path == path:
+        return conn
+
+    if isinstance(conn, sqlite3.Connection):
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=5000")
+    _THREAD_LOCAL.conn = conn
+    _THREAD_LOCAL.path = path
     return conn
 
 

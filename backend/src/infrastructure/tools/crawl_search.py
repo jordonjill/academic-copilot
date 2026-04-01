@@ -11,14 +11,12 @@ from dotenv import load_dotenv
 from langchain_core.tools import tool
 from langchain_tavily import TavilySearch
 
-from src.infrastructure.config.config import MAX_TAVILY_SEARCHES
-
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 _JINA_TIMEOUT_SECONDS = 120
 _CRAWL_MAX_WORKERS = 5
-_DEFAULT_DOMAIN_FILTER = ["https://www.sciencedirect.com/"]
+_DEFAULT_MAX_RESULTS = 10
 
 
 def _tool_error(code: str, message: str, *, uri: str | None = None) -> dict[str, str]:
@@ -31,11 +29,38 @@ def _tool_error(code: str, message: str, *, uri: str | None = None) -> dict[str,
     return payload
 
 
-def _resolve_domain_filter() -> list[str]:
-    raw = os.getenv("WEB_SEARCH_INCLUDE_DOMAINS", "").strip()
-    if not raw:
-        return list(_DEFAULT_DOMAIN_FILTER)
-    return [item.strip() for item in raw.split(",") if item.strip()]
+def _resolve_tool_settings() -> dict[str, Any]:
+    try:
+        from src.infrastructure.tools.tool_manager import get_tool_manager
+
+        manager = get_tool_manager()
+        return manager.get_tool_settings("web_search")
+    except Exception:
+        return {}
+
+
+def _resolve_domain_filter(settings: dict[str, Any]) -> list[str]:
+    raw = settings.get("include_domains")
+    if not isinstance(raw, list):
+        return []
+    result: list[str] = []
+    for item in raw:
+        if isinstance(item, str):
+            value = item.strip()
+            if value:
+                result.append(value)
+    return result
+
+
+def _resolve_max_results(settings: dict[str, Any]) -> int:
+    raw = settings.get("max_results")
+    if raw is None:
+        return _DEFAULT_MAX_RESULTS
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_RESULTS
+    return max(1, value)
 
 
 class JinaClient:
@@ -100,10 +125,11 @@ def crawl_search(query: str) -> list[dict[str, Any]]:
     Search the web and extract compact article snippets.
     """
     try:
+        settings = _resolve_tool_settings()
         tavily_search = TavilySearch(
-            max_results=MAX_TAVILY_SEARCHES,
+            max_results=_resolve_max_results(settings),
             search_depth="advanced",
-            include_domains=_resolve_domain_filter(),
+            include_domains=_resolve_domain_filter(settings),
         )
         results = tavily_search.invoke({"query": query})
         items = results.get("results") if isinstance(results, dict) else []

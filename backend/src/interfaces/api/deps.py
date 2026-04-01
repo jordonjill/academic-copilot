@@ -7,8 +7,9 @@ from fastapi import Depends
 security = HTTPBearer()
 
 
-def _expected_access_key() -> str:
-    return os.getenv("ACCESS_KEY", "123")
+def _expected_access_key() -> str | None:
+    key = os.getenv("ACCESS_KEY", "").strip()
+    return key or None
 
 
 def _expected_admin_access_key() -> str | None:
@@ -19,7 +20,13 @@ def _expected_admin_access_key() -> str | None:
 async def verify_access_key(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> str:
-    if credentials.credentials != _expected_access_key():
+    expected = _expected_access_key()
+    if not expected:
+        raise HTTPException(
+            status_code=403,
+            detail="API endpoints are disabled: ACCESS_KEY is not configured",
+        )
+    if credentials.credentials != expected:
         raise HTTPException(
             status_code=401,
             detail="Invalid access key",

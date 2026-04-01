@@ -41,7 +41,6 @@ async def chat(
             user_id=request.user_id,
             session_id=session_id,
             workflow_id=request.workflow_id,
-            recursion_limit=25,
         )
     except (asyncio.TimeoutError, TimeoutError) as e:
         logger.warning("[chat] timeout: %s", e)

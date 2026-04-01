@@ -25,6 +25,10 @@ def test_tool_manager_loads_internal_tools(tmp_path):
                 "transport": "internal",
                 "module": "src.infrastructure.tools.crawl_search",
                 "attribute": "crawl_search",
+                "settings": {
+                    "max_results": 7,
+                    "include_domains": ["https://example.org"],
+                },
                 "enabled": True,
             },
             "disabled_tool": {
@@ -45,6 +49,11 @@ def test_tool_manager_loads_internal_tools(tmp_path):
     assert "disabled_tool" not in report["loaded_tools"]
     assert manager.get_tool("arxiv") is not None
     assert manager.get_tool("disabled_tool") is None
+    assert manager.get_tool_settings("web_search") == {
+        "max_results": 7,
+        "include_domains": ["https://example.org"],
+    }
+    assert manager.get_tool_settings("unknown_tool") == {}
     assert manager.get_catalog_tool_ids(enabled_only=True) == {"arxiv", "web_search"}
     assert manager.get_catalog_tool_ids(enabled_only=False) == {"arxiv", "web_search", "disabled_tool"}
 

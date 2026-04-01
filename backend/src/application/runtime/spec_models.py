@@ -59,3 +59,24 @@ class WorkflowSpec(BaseModel):
     limits: Dict[str, int] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _validate_graph(self) -> "WorkflowSpec":
+        if self.entry_node not in self.nodes:
+            raise ValueError(f"entry_node '{self.entry_node}' is not defined in nodes")
+
+        for idx, edge in enumerate(self.edges):
+            if not isinstance(edge, dict):
+                raise ValueError(f"edge[{idx}] must be a mapping")
+            source = edge.get("from")
+            target = edge.get("to")
+            if not isinstance(source, str) or not source:
+                raise ValueError(f"edge[{idx}].from must be a non-empty string")
+            if not isinstance(target, str) or not target:
+                raise ValueError(f"edge[{idx}].to must be a non-empty string")
+            if source not in self.nodes:
+                raise ValueError(f"edge[{idx}].from references unknown node '{source}'")
+            if target not in self.nodes:
+                raise ValueError(f"edge[{idx}].to references unknown node '{target}'")
+
+        return self

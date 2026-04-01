@@ -34,7 +34,10 @@ def test_workflow_spec_accepts_minimal_valid_payload():
             "id": "proposal",
             "name": "Proposal v2",
             "entry_node": "start",
-            "nodes": {"start": {"type": "agent"}},
+            "nodes": {
+                "start": {"type": "agent"},
+                "end": {"type": "terminal"},
+            },
             "edges": [{"from": "start", "to": "end"}],
         }
     )

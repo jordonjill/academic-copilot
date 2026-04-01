@@ -55,6 +55,13 @@ class WorkflowRuntime:
             raise RuntimeError("max_loops exceeded")
 
     def _condition_matches(self, condition: Any, state: dict[str, Any]) -> bool:
+        if condition is None:
+            logger.debug(
+                "workflow.condition.none workflow_id=%s state_keys=%s",
+                self.spec.id,
+                sorted(state.keys()),
+            )
+            return False
         if isinstance(condition, dict):
             field = condition.get("field")
             if not field:

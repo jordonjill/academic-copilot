@@ -14,6 +14,9 @@ tools:
     transport: internal
     module: "src.infrastructure.tools.crawl_search"
     attribute: "crawl_search"
+    settings:
+      max_results: 10
+      include_domains: []
     enabled: true
 
   arxiv:
