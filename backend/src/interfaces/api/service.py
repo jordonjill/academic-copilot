@@ -12,10 +12,12 @@ Academic Copilot 服务层。
 from __future__ import annotations
 
 import asyncio
+import os
 import json
 import logging
 import threading
 import uuid
+from collections import OrderedDict
 from datetime import datetime
 from time import perf_counter
 from pathlib import Path
@@ -26,6 +28,7 @@ from langchain_core.messages import BaseMessage, HumanMessage
 
 from src.application.runtime.config_registry import ConfigRegistry
 from src.application.runtime.runtime_engine import RuntimeEngine
+from src.application.runtime.state_types import RuntimeState
 from src.infrastructure.memory import MemoryAdapter
 from src.infrastructure.memory.sqlite_store import SQLiteStore
 from src.infrastructure.tools.tool_manager import get_tool_manager
@@ -38,6 +41,8 @@ _CONFIG_REGISTRY = ConfigRegistry(config_root=_CONFIG_ROOT)
 logger = logging.getLogger(__name__)
 _APP_LOCK = threading.Lock()
 _COPILOT_APP: Optional["AcademicCopilotApp"] = None
+_DEFAULT_CHAT_TURN_TIMEOUT_SECONDS = 300.0
+_MAX_LAST_STATES = 128
 
 
 def get_config_registry() -> ConfigRegistry:
@@ -146,7 +151,8 @@ class AcademicCopilotApp:
         self.model_type = model_type
         self.runtime = RuntimeEngine(registry=_CONFIG_REGISTRY)
         self.memory = MemoryAdapter()
-        self._last_state: Optional[Dict[str, Any]] = None
+        self._last_states: OrderedDict[str, RuntimeState] = OrderedDict()
+        self._last_states_lock = threading.Lock()
 
     async def chat_async(
         self,
@@ -168,7 +174,7 @@ class AcademicCopilotApp:
             workflow_id=workflow_id,
         )
         history_messages, memory_summary = self.memory.load_context(sid)
-        state = self._build_state(
+        state: RuntimeState = self._build_state(
             user_message,
             user_id,
             sid,
@@ -201,14 +207,29 @@ class AcademicCopilotApp:
             )
 
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None,
-            lambda: self.runtime.run_turn(
-                state,
-                requested_workflow_id=workflow_id,
-                step_callback=_capture_step,
-            ),
-        )
+        timeout_seconds = _chat_turn_timeout_seconds()
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: self.runtime.run_turn(
+                        state,
+                        requested_workflow_id=workflow_id,
+                        step_callback=_capture_step,
+                    ),
+                ),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            _log_event(
+                "chat.turn.timeout",
+                session_id=sid,
+                user_id=user_id,
+                timeout_seconds=timeout_seconds,
+            )
+            raise asyncio.TimeoutError(
+                f"Chat turn timed out after {int(timeout_seconds)} seconds"
+            )
 
         try:
             llm = self.runtime.resolve_default_llm()
@@ -217,9 +238,9 @@ class AcademicCopilotApp:
                 lambda: self.memory.persist_turn(state, llm),
             )
         except Exception as exc:
-            logger.warning("Memory pipeline failed (non-fatal): %s", exc)
+            logger.exception("Memory pipeline failed (non-fatal): %s", exc)
 
-        self._last_state = state
+        self._remember_state(sid, state)
         _log_event(
             "chat.turn.complete",
             session_id=sid,
@@ -244,8 +265,14 @@ class AcademicCopilotApp:
 
         return result
 
-    def get_current_state(self) -> Optional[Dict[str, Any]]:
-        return self._last_state
+    def get_current_state(self, session_id: Optional[str] = None) -> Optional[RuntimeState]:
+        with self._last_states_lock:
+            if session_id:
+                return self._last_states.get(session_id)
+            if not self._last_states:
+                return None
+            _, latest = next(reversed(self._last_states.items()))
+            return latest
 
     def health_check(self) -> Dict[str, Any]:
         try:
@@ -271,6 +298,14 @@ class AcademicCopilotApp:
         except Exception as e:
             return {"status": "unhealthy", "message": str(e)}
 
+    def _remember_state(self, session_id: str, state: RuntimeState) -> None:
+        with self._last_states_lock:
+            if session_id in self._last_states:
+                self._last_states.pop(session_id)
+            self._last_states[session_id] = state
+            while len(self._last_states) > _MAX_LAST_STATES:
+                self._last_states.popitem(last=False)
+
     @staticmethod
     def _build_state(
         user_message: str,
@@ -279,7 +314,7 @@ class AcademicCopilotApp:
         workflow_id: Optional[str] = None,
         history_messages: Optional[list[BaseMessage]] = None,
         memory_summary: str = "",
-    ) -> Dict[str, Any]:
+    ) -> RuntimeState:
         initial_messages = list(history_messages or [])
         initial_messages.append(HumanMessage(content=user_message))
         return {
@@ -357,3 +392,16 @@ def _memory_probe() -> Dict[str, Any]:
 def _log_event(event: str, **fields: Any) -> None:
     payload = {"event": event, "timestamp": _ts(), **fields}
     logger.info(json.dumps(payload, ensure_ascii=False, default=str))
+
+
+def _chat_turn_timeout_seconds() -> float:
+    raw = os.getenv("CHAT_TURN_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return _DEFAULT_CHAT_TURN_TIMEOUT_SECONDS
+    try:
+        timeout = float(raw)
+    except ValueError:
+        return _DEFAULT_CHAT_TURN_TIMEOUT_SECONDS
+    if timeout <= 0:
+        return _DEFAULT_CHAT_TURN_TIMEOUT_SECONDS
+    return timeout

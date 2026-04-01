@@ -60,6 +60,8 @@ class ToolManager:
         self._server_specs: dict[str, ServerSpec] = {}
         self._tools: dict[str, BaseTool] = {}
         self._server_tools: dict[str, list[BaseTool]] = {}
+        self._failed_servers: dict[str, str] = {}
+        self._failed_tools: dict[str, str] = {}
 
     def _load_catalog_payload(self) -> dict[str, Any]:
         if not self.catalog_path.exists():
@@ -107,39 +109,36 @@ class ToolManager:
 
     def _load_internal_tool(self, spec: ToolSpec) -> BaseTool | None:
         if not spec.module or not spec.attribute:
-            logger.warning(
-                "Internal tool '%s' missing module/attribute in catalog",
-                spec.tool_id,
-            )
+            reason = "missing module/attribute in catalog"
+            logger.warning("Internal tool '%s' %s", spec.tool_id, reason)
+            self._failed_tools[spec.tool_id] = reason
             return None
         try:
             mod = importlib.import_module(spec.module)
             tool_obj = getattr(mod, spec.attribute)
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "Failed to import internal tool '%s' from %s.%s",
                 spec.tool_id,
                 spec.module,
                 spec.attribute,
             )
+            self._failed_tools[spec.tool_id] = f"import failed: {exc!r}"
             return None
 
         if not hasattr(tool_obj, "name") or not hasattr(tool_obj, "description"):
-            logger.warning(
-                "Internal tool '%s' is missing tool interface (name/description)",
-                spec.tool_id,
-            )
+            reason = "missing tool interface (name/description)"
+            logger.warning("Internal tool '%s' is %s", spec.tool_id, reason)
+            self._failed_tools[spec.tool_id] = reason
             return None
         return tool_obj
 
     def _pick_server_tool(self, server_name: str, spec: ToolSpec) -> BaseTool | None:
         server_tools = self._server_tools.get(server_name, [])
         if not server_tools:
-            logger.warning(
-                "No MCP tools loaded for server '%s' (tool_id=%s)",
-                server_name,
-                spec.tool_id,
-            )
+            reason = f"no tools loaded from server '{server_name}'"
+            logger.warning("No MCP tools loaded for server '%s' (tool_id=%s)", server_name, spec.tool_id)
+            self._failed_tools[spec.tool_id] = reason
             return None
 
         if spec.tool_name:
@@ -152,12 +151,16 @@ class ToolManager:
                 server_name,
                 spec.tool_id,
             )
+            self._failed_tools[spec.tool_id] = (
+                f"tool_name '{spec.tool_name}' not found on server '{server_name}'"
+            )
             return None
 
         return server_tools[0]
 
     async def _load_mcp_server_tools(self) -> None:
         self._server_tools = {}
+        self._failed_servers = {}
 
         mcp_server_params: dict[str, dict[str, Any]] = {}
         for name, spec in self._server_specs.items():
@@ -177,14 +180,18 @@ class ToolManager:
 
         try:
             from langchain_mcp_adapters.client import MultiServerMCPClient
-        except ImportError:
+        except ImportError as exc:
             logger.warning("langchain-mcp-adapters not installed, MCP tools skipped.")
+            for server_name in mcp_server_params:
+                self._failed_servers[server_name] = f"mcp adapter import failed: {exc!r}"
             return
 
         try:
             client = MultiServerMCPClient(mcp_server_params)
-        except Exception:
+        except Exception as exc:
             logger.exception("MCP client initialization failed")
+            for server_name in mcp_server_params:
+                self._failed_servers[server_name] = f"mcp client initialization failed: {exc!r}"
             return
 
         for server_name in mcp_server_params:
@@ -197,12 +204,13 @@ class ToolManager:
                     len(tools),
                     server_name,
                 )
-            except Exception:
+            except Exception as exc:
                 logger.exception(
                     "Failed to fetch MCP tools for server '%s'",
                     server_name,
                 )
                 self._server_tools[server_name] = []
+                self._failed_servers[server_name] = f"failed to fetch tools: {exc!r}"
 
     def _collect_enabled_internal_tools(self) -> dict[str, BaseTool]:
         tools: dict[str, BaseTool] = {}
@@ -221,6 +229,7 @@ class ToolManager:
                 continue
             if not spec.server:
                 logger.warning("MCP tool '%s' missing server in catalog", tool_id)
+                self._failed_tools[tool_id] = "missing server in catalog"
                 continue
             picked = self._pick_server_tool(spec.server, spec)
             if picked is not None:
@@ -231,6 +240,8 @@ class ToolManager:
         payload = self._load_catalog_payload()
         self._parse_specs(payload)
         self._server_tools = {}
+        self._failed_servers = {}
+        self._failed_tools = {}
         tools = self._collect_enabled_internal_tools()
         self._tools = tools
         self.version += 1
@@ -240,6 +251,8 @@ class ToolManager:
     async def reload(self) -> dict[str, Any]:
         payload = self._load_catalog_payload()
         self._parse_specs(payload)
+        self._failed_servers = {}
+        self._failed_tools = {}
         tools = self._collect_enabled_internal_tools()
         await self._load_mcp_server_tools()
         tools.update(self._collect_enabled_mcp_tools())
@@ -272,11 +285,19 @@ class ToolManager:
         return tool_ids
 
     def report(self) -> dict[str, Any]:
+        failed: list[dict[str, str]] = []
+        for server_name, error in sorted(self._failed_servers.items()):
+            failed.append({"type": "server", "id": server_name, "error": error})
+        for tool_id, error in sorted(self._failed_tools.items()):
+            failed.append({"type": "tool", "id": tool_id, "error": error})
         return {
             "tool_catalog_path": str(self.catalog_path),
             "version": self.version,
             "loaded_tools": sorted(self._tools.keys()),
             "loaded_servers": sorted(self._server_tools.keys()),
+            "failed_servers": dict(sorted(self._failed_servers.items())),
+            "failed_tools": dict(sorted(self._failed_tools.items())),
+            "failed": failed,
         }
 
 

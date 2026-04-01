@@ -223,3 +223,26 @@ def test_enforce_limits_raises_on_loop_limit(workflow_runtime, proposal_state):
     proposal_state["_loop_count"] = workflow_runtime.spec.limits.get("max_loops", 6)
     with pytest.raises(RuntimeError, match="max_loops"):
         workflow_runtime.enforce_limits(proposal_state)
+
+
+def test_next_node_supports_expression_condition():
+    spec = WorkflowSpec.model_validate(
+        {
+            "id": "expr_workflow",
+            "name": "Expression Workflow",
+            "entry_node": "start",
+            "nodes": {
+                "start": {"type": "agent", "agent_id": "planner"},
+                "good": {"type": "terminal"},
+                "bad": {"type": "terminal"},
+            },
+            "edges": [
+                {"from": "start", "to": "good", "condition": "artifacts.score >= 0.8"},
+                {"from": "start", "to": "bad"},
+            ],
+            "limits": {},
+        }
+    )
+    runtime = WorkflowRuntime(spec, agent_runner=None)
+    next_node = runtime.next_node("start", {"artifacts": {"score": 0.9}})
+    assert next_node == "good"

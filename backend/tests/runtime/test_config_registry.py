@@ -442,3 +442,32 @@ def test_registry_preserves_last_known_good(tmp_path):
         and "planner.yaml" in failure.get("path", "")
         for failure in second["failed_objects"]
     )
+
+
+def test_registry_llm_env_expansion_requires_defined_variables(tmp_path, monkeypatch):
+    config_root = tmp_path / "config"
+    config_root.mkdir(parents=True)
+    monkeypatch.delenv("MISSING_LLM_BASE_URL", raising=False)
+
+    (config_root / "llms.yaml").write_text(
+        "\n".join(
+            [
+                "llms:",
+                "  test_llm:",
+                "    model_name: gpt-4o-mini",
+                "    base_url: ${MISSING_LLM_BASE_URL}",
+                "    api_key_env: OPENAI_API_KEY",
+                "    temperature: 0.0",
+            ]
+        )
+    )
+
+    registry = ConfigRegistry(config_root=config_root)
+    report = registry.reload()
+
+    assert "test_llm" not in report["loaded_llms"]
+    assert any(
+        failure.get("type") == "llm"
+        and "Missing required environment variable: MISSING_LLM_BASE_URL" in failure.get("error", "")
+        for failure in report["failed_objects"]
+    )

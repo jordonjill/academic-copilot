@@ -1,8 +1,12 @@
 """Academic Copilot — FastAPI 服务入口。"""
+import json
 import logging
+import os
 import socket
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+from time import perf_counter
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,20 +23,29 @@ BACKEND_DIR = Path(__file__).resolve().parent
 FRONTEND_DIR = BACKEND_DIR.parent / "frontend"
 
 
+def _tools_strict_startup() -> bool:
+    return os.getenv("TOOLS_STRICT_STARTUP", "true").strip().lower() in {"1", "true", "yes", "on"}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Academic Copilot starting — initializing tools...")
     try:
         tools_report = await initialize_tools()
         runtime_report = reload_runtime_config()
-        failed = runtime_report.get("failed", [])
-        if failed:
-            raise RuntimeError(f"Runtime config validation failed with {len(failed)} issue(s)")
+        runtime_failed = runtime_report.get("failed", [])
+        tools_failed = tools_report.get("failed", [])
+        if runtime_failed:
+            raise RuntimeError(f"Runtime config validation failed with {len(runtime_failed)} issue(s)")
+        if tools_failed and _tools_strict_startup():
+            raise RuntimeError(f"Tool initialization failed with {len(tools_failed)} issue(s)")
         logger.info(
             "Tools loaded: %d tools, %d servers",
             len(tools_report.get("loaded_tools", [])),
             len(tools_report.get("loaded_servers", [])),
         )
+        if tools_failed:
+            logger.warning("Tools loaded with failures: %d", len(tools_failed))
         logger.info(
             "Runtime config loaded: %d agents, %d workflows",
             len(runtime_report["loaded"]["agents"]),
@@ -56,6 +69,44 @@ app = FastAPI(
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
+
+
+@app.middleware("http")
+async def request_observability_middleware(request, call_next):
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    started = perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception(
+            json.dumps(
+                {
+                    "event": "http.request.error",
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "duration_ms": round((perf_counter() - started) * 1000, 2),
+                },
+                ensure_ascii=False,
+            )
+        )
+        raise
+    duration_ms = round((perf_counter() - started) * 1000, 2)
+    response.headers["X-Request-ID"] = request_id
+    logger.info(
+        json.dumps(
+            {
+                "event": "http.request.complete",
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": response.status_code,
+                "duration_ms": duration_ms,
+            },
+            ensure_ascii=False,
+        )
+    )
+    return response
 
 app.include_router(chat.router)
 app.include_router(health.router)

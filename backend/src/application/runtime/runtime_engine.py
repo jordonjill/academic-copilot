@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import re
+import threading
+from time import perf_counter
 from typing import Any, Callable, Dict, Optional
 
 from langchain_core.language_models import BaseLanguageModel
@@ -12,6 +14,7 @@ from langchain_openai import ChatOpenAI
 
 from src.application.runtime.agent_factory import build_agent_from_spec
 from src.application.runtime.config_registry import ConfigRegistry
+from src.application.runtime.state_types import RuntimeState
 from src.application.runtime.spec_models import AgentSpec
 from src.application.runtime.workflow_router import WorkflowRuntime
 from src.infrastructure.tools.registry import get_tool
@@ -32,11 +35,14 @@ class RuntimeEngine:
 
     def __init__(self, registry: ConfigRegistry) -> None:
         self.registry = registry
-        self._llm_cache: dict[tuple[str, str, str, float], BaseLanguageModel] = {}
+        self._llm_cache: dict[tuple[str, str, str, str], BaseLanguageModel] = {}
+        self._llm_cache_lock = threading.Lock()
+        self._llm_cache_hits = 0
+        self._llm_cache_misses = 0
 
     def run_turn(
         self,
-        state: Dict[str, Any],
+        state: RuntimeState,
         requested_workflow_id: Optional[str] = None,
         step_callback: Optional[StepCallback] = None,
     ) -> Dict[str, Any]:
@@ -55,7 +61,7 @@ class RuntimeEngine:
         if not self.registry.agents and not self.registry.workflows:
             self.registry.reload()
 
-    def _run_chitchat(self, state: Dict[str, Any]) -> None:
+    def _run_chitchat(self, state: RuntimeState) -> None:
         llm = self._resolve_default_llm()
         messages = list(state["context"].get("messages", []))
         response = llm.invoke([SystemMessage(content=CHITCHAT_SYSTEM)] + messages)
@@ -66,7 +72,7 @@ class RuntimeEngine:
 
     def _run_supervisor_loop(
         self,
-        state: Dict[str, Any],
+        state: RuntimeState,
         requested_workflow_id: Optional[str],
         step_callback: Optional[StepCallback],
     ) -> None:
@@ -88,9 +94,13 @@ class RuntimeEngine:
         max_steps = int(os.getenv("SUPERVISOR_MAX_STEPS", "8"))
         max_subagent_calls_per_agent = _read_int_env(_SUPERVISOR_MAX_SUBAGENT_CALLS_ENV, 2)
         max_subagent_calls_per_agent = max(0, max_subagent_calls_per_agent)
+        max_wall_seconds = _read_float_env("SUPERVISOR_MAX_WALL_TIME_SECONDS", 180.0)
+        started = perf_counter()
         subagent_call_counts: dict[str, int] = {}
 
         for _ in range(max_steps):
+            if perf_counter() - started > max_wall_seconds:
+                raise TimeoutError(f"Supervisor loop timeout after {max_wall_seconds:.1f} seconds")
             decision = self._decide_next_action(
                 state=state,
                 supervisor_spec=supervisor_spec,
@@ -181,7 +191,7 @@ class RuntimeEngine:
 
     def _decide_next_action(
         self,
-        state: Dict[str, Any],
+        state: RuntimeState,
         supervisor_spec: AgentSpec,
         requested_workflow_id: Optional[str],
     ) -> Dict[str, Any]:
@@ -220,7 +230,7 @@ class RuntimeEngine:
         self,
         parsed: Dict[str, Any],
         raw_text: str,
-        state: Dict[str, Any],
+        state: RuntimeState,
     ) -> Dict[str, Any]:
         action = parsed.get("action")
         if not isinstance(action, str):
@@ -254,7 +264,7 @@ class RuntimeEngine:
             normalized["reason"] = parsed["reason"]
         return normalized
 
-    def _resolve_workflow_target(self, decision: Dict[str, Any], state: Dict[str, Any]) -> Optional[str]:
+    def _resolve_workflow_target(self, decision: Dict[str, Any], state: RuntimeState) -> Optional[str]:
         del state
         target = decision.get("target")
         if isinstance(target, str) and target in self.registry.workflows:
@@ -277,7 +287,7 @@ class RuntimeEngine:
 
     def _finalize_with_supervisor(
         self,
-        state: Dict[str, Any],
+        state: RuntimeState,
         requested_workflow_id: Optional[str],
     ) -> None:
         supervisor_spec = self._resolve_supervisor_spec()
@@ -313,7 +323,7 @@ class RuntimeEngine:
 
     def _run_workflow(
         self,
-        state: Dict[str, Any],
+        state: RuntimeState,
         workflow_id: str,
         step_callback: Optional[StepCallback],
     ) -> None:
@@ -324,8 +334,12 @@ class RuntimeEngine:
 
         current_node = spec.entry_node
         visit_counts: dict[str, int] = {}
+        max_wall_seconds = _read_float_env("WORKFLOW_MAX_WALL_TIME_SECONDS", 300.0)
+        started = perf_counter()
 
         while True:
+            if perf_counter() - started > max_wall_seconds:
+                raise TimeoutError(f"Workflow timeout after {max_wall_seconds:.1f} seconds")
             runtime.enforce_limits(
                 {
                     "_step_count": state["runtime"]["step_count"],
@@ -383,7 +397,7 @@ class RuntimeEngine:
             visit_counts[next_node] = visit_counts.get(next_node, 0) + 1
             current_node = next_node
 
-    def _execute_agent(self, state: Dict[str, Any], node_name: str, agent_id: str) -> None:
+    def _execute_agent(self, state: RuntimeState, node_name: str, agent_id: str) -> None:
         if agent_id not in self.registry.agents:
             raise RuntimeError(f"Agent not found: {agent_id}")
 
@@ -406,7 +420,7 @@ class RuntimeEngine:
 
         self._apply_agent_output(state, node_name, agent_id, text, parsed)
 
-    def _execute_react_agent(self, state: Dict[str, Any], node_name: str, agent_id: str, runnable: Any) -> None:
+    def _execute_react_agent(self, state: RuntimeState, node_name: str, agent_id: str, runnable: Any) -> None:
         messages = list(state["context"].get("messages", []))
         raw = runnable.invoke({"messages": messages})
 
@@ -428,7 +442,7 @@ class RuntimeEngine:
 
     def _apply_agent_output(
         self,
-        state: Dict[str, Any],
+        state: RuntimeState,
         node_name: str,
         agent_id: str,
         text: str,
@@ -458,7 +472,7 @@ class RuntimeEngine:
         if node_name == "reporter" and not state["output"].get("final_text"):
             state["output"]["final_text"] = text
 
-    def _build_chain_payload(self, state: Dict[str, Any], node_name: str, agent_id: str) -> Dict[str, Any]:
+    def _build_chain_payload(self, state: RuntimeState, node_name: str, agent_id: str) -> Dict[str, Any]:
         artifacts = state.get("artifacts", {})
         payload = {
             "user_text": state["input"].get("user_text", ""),
@@ -502,10 +516,15 @@ class RuntimeEngine:
             if llm_ref.temperature is not None
             else float(profile.temperature)
         )
+        cache_temperature = f"{round(temperature, 3):.3f}"
 
-        key = (profile_name, model, base_url, temperature)
-        if key in self._llm_cache:
-            return self._llm_cache[key]
+        key = (profile_name, model, base_url, cache_temperature)
+        with self._llm_cache_lock:
+            cached = self._llm_cache.get(key)
+            if cached is not None:
+                self._llm_cache_hits += 1
+                return cached
+            self._llm_cache_misses += 1
 
         kwargs: dict[str, Any] = {
             "model": model,
@@ -517,7 +536,12 @@ class RuntimeEngine:
             kwargs["api_key"] = api_key
         llm = ChatOpenAI(**kwargs)
 
-        self._llm_cache[key] = llm
+        with self._llm_cache_lock:
+            existing = self._llm_cache.get(key)
+            if existing is not None:
+                self._llm_cache_hits += 1
+                return existing
+            self._llm_cache[key] = llm
         return llm
 
     def _resolve_supervisor_spec(self) -> Optional[AgentSpec]:
@@ -565,6 +589,7 @@ class RuntimeEngine:
             "supervisor_agent_id": supervisor.id if supervisor else None,
             "default_llm_type": default_llm_type,
             "tool_manager_initialized": tool is not None,
+            "llm_cache": self._cache_metrics(),
             "errors": errors,
         }
 
@@ -613,6 +638,7 @@ class RuntimeEngine:
         text = (text or "").strip()
         if not text:
             return None
+        decoder = json.JSONDecoder()
 
         try:
             parsed = json.loads(text)
@@ -629,19 +655,26 @@ class RuntimeEngine:
             except json.JSONDecodeError:
                 pass
 
-        start = text.find("{")
-        end = text.rfind("}")
-        if start >= 0 and end > start:
-            snippet = text[start : end + 1]
+        for idx, char in enumerate(text):
+            if char != "{":
+                continue
             try:
-                parsed = json.loads(snippet)
+                parsed, _ = decoder.raw_decode(text, idx)
                 return parsed if isinstance(parsed, dict) else None
             except json.JSONDecodeError:
-                return None
+                continue
 
         return None
 
-    def _build_result(self, state: Dict[str, Any]) -> Dict[str, Any]:
+    def _cache_metrics(self) -> Dict[str, int]:
+        with self._llm_cache_lock:
+            return {
+                "size": len(self._llm_cache),
+                "hits": self._llm_cache_hits,
+                "misses": self._llm_cache_misses,
+            }
+
+    def _build_result(self, state: RuntimeState) -> Dict[str, Any]:
         final_structured = state["output"].get("final_structured")
         if isinstance(final_structured, dict):
             result = {"success": True, "type": "structured", "data": final_structured}
@@ -669,3 +702,16 @@ def _read_int_env(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _read_float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if value <= 0:
+        return default
+    return value

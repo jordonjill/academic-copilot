@@ -1,5 +1,6 @@
 """POST /chat — 无状态多轮对话（Supervisor 路由）。"""
 from __future__ import annotations
+import asyncio
 import uuid
 import logging
 from datetime import datetime
@@ -8,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from src.interfaces.api.deps import verify_access_key
 from src.interfaces.api.schemas import ChatRequest, ChatResponse
-from src.interfaces.api.service import create_copilot
+from src.interfaces.api.service import create_copilot, get_config_registry
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["chat"])
@@ -26,6 +27,10 @@ async def chat(
     """
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
+    if request.workflow_id:
+        registry = get_config_registry()
+        if registry.workflows and request.workflow_id not in registry.workflows:
+            raise HTTPException(status_code=400, detail=f"Unknown workflow_id: {request.workflow_id}")
 
     session_id = request.session_id or str(uuid.uuid4())
 
@@ -38,8 +43,14 @@ async def chat(
             workflow_id=request.workflow_id,
             recursion_limit=25,
         )
+    except (asyncio.TimeoutError, TimeoutError) as e:
+        logger.warning("[chat] timeout: %s", e)
+        raise HTTPException(status_code=504, detail=str(e))
+    except ValueError as e:
+        logger.warning("[chat] bad request: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"[chat] error: {e}")
+        logger.exception("[chat] error")
         raise HTTPException(status_code=500, detail=str(e))
 
     rtype = result.get("type", "chat")

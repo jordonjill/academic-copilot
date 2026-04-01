@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 from src.application.runtime.spec_models import WorkflowSpec
@@ -52,19 +54,75 @@ class WorkflowRuntime:
     def _condition_matches(self, condition: Any, state: dict[str, Any]) -> bool:
         if isinstance(condition, dict):
             field = condition.get("field")
-            equals = condition.get("equals")
             if not field:
                 return False
             value = self._extract_field(state, field)
-            return value == equals
+            op = str(condition.get("op") or "eq").strip().lower()
+            expected = condition.get("value", condition.get("equals"))
+            return self._evaluate_condition(value, expected, op)
 
         if isinstance(condition, str):
             condition_value = condition.strip().lower()
+            expr_match = re.match(
+                r"^\s*([A-Za-z0-9_.]+)\s*(==|!=|>=|<=|>|<)\s*(.+?)\s*$",
+                condition,
+            )
+            if expr_match:
+                field, symbol, raw_expected = expr_match.groups()
+                value = self._extract_field(state, field)
+                expected = self._parse_literal(raw_expected)
+                op = {
+                    "==": "eq",
+                    "!=": "ne",
+                    ">": "gt",
+                    ">=": "gte",
+                    "<": "lt",
+                    "<=": "lte",
+                }[symbol]
+                return self._evaluate_condition(value, expected, op)
             for candidate in self._string_condition_candidates(state):
                 if candidate == condition_value:
                     return True
             return False
 
+        return False
+
+    def _evaluate_condition(self, value: Any, expected: Any, op: str) -> bool:
+        if op in {"eq", "=="}:
+            return value == expected
+        if op in {"ne", "!="}:
+            return value != expected
+        if op == "in":
+            if isinstance(expected, (list, tuple, set)):
+                return value in expected
+            return False
+        if op == "not_in":
+            if isinstance(expected, (list, tuple, set)):
+                return value not in expected
+            return False
+        if op == "contains":
+            if isinstance(value, (list, tuple, set, str)):
+                return expected in value
+            return False
+        if op == "exists":
+            return value is not None
+        if op == "truthy":
+            return bool(value)
+        if op == "falsy":
+            return not bool(value)
+        if op in {"gt", "gte", "lt", "lte"}:
+            try:
+                left = float(value)
+                right = float(expected)
+            except (TypeError, ValueError):
+                return False
+            if op == "gt":
+                return left > right
+            if op == "gte":
+                return left >= right
+            if op == "lt":
+                return left < right
+            return left <= right
         return False
 
     def _extract_field(self, state: dict[str, Any], field_path: str) -> Any:
@@ -93,3 +151,21 @@ class WorkflowRuntime:
                 candidates.append("valid" if research_critic["is_valid"] else "revise")
 
         return candidates
+
+    def _parse_literal(self, raw: str) -> Any:
+        text = raw.strip()
+        if not text:
+            return ""
+        if (text.startswith('"') and text.endswith('"')) or (text.startswith("'") and text.endswith("'")):
+            return text[1:-1]
+        lowered = text.lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+        if lowered == "null":
+            return None
+        try:
+            return json.loads(text)
+        except Exception:
+            return text

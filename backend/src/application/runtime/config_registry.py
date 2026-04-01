@@ -3,12 +3,14 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, TypeVar
 
 import yaml
 from pydantic import ValidationError
 
 from src.application.runtime.spec_models import AgentSpec, LLMProfileSpec, WorkflowSpec
+
+_SpecT = TypeVar("_SpecT")
 
 
 class ConfigRegistry:
@@ -97,7 +99,7 @@ class ConfigRegistry:
             try:
                 expanded = _expand_env_mapping(raw)
                 spec = LLMProfileSpec.model_validate({"name": name, **expanded})
-            except ValidationError as exc:
+            except (ValidationError, ValueError) as exc:
                 record_failure("llm", llms_path, exc)
                 preserve_names.add(name)
                 continue
@@ -110,84 +112,74 @@ class ConfigRegistry:
         agents_dir: Path,
         record_failure,
     ) -> tuple[Dict[str, AgentSpec], set[str]]:
-        new_agents: Dict[str, AgentSpec] = {}
-        seen_ids: dict[str, Path] = {}
-        preserve_ids: set[str] = set()
-        duplicate_ids: set[str] = set()
-
-        for path in self._iter_yaml_files(agents_dir):
-            try:
-                payload = self._load_yaml(path)
-            except (OSError, ValueError, yaml.YAMLError) as exc:
-                record_failure("agent", path, exc)
-                continue
-
-            raw_id = payload.get("id") if isinstance(payload, dict) else None
-            try:
-                spec = AgentSpec.model_validate(payload)
-            except ValidationError as exc:
-                record_failure("agent", path, exc)
-                if isinstance(raw_id, str):
-                    preserve_ids.add(raw_id)
-                continue
-
-            if spec.id in duplicate_ids:
-                record_failure("agent", path, ValueError(f"Duplicate agent id: {spec.id}"))
-                continue
-
-            if spec.id in seen_ids:
-                duplicate_ids.add(spec.id)
-                record_failure("agent", path, ValueError(f"Duplicate agent id: {spec.id}"))
-                record_failure("agent", seen_ids[spec.id], ValueError(f"Duplicate agent id: {spec.id}"))
-                new_agents.pop(spec.id, None)
-                continue
-
-            seen_ids[spec.id] = path
-            new_agents[spec.id] = spec
-
-        return new_agents, preserve_ids
+        return self._load_typed_objects(
+            kind="agent",
+            root=agents_dir,
+            record_failure=record_failure,
+            validator=AgentSpec.model_validate,
+        )
 
     def _load_workflows(
         self,
         workflows_dir: Path,
         record_failure,
     ) -> tuple[Dict[str, WorkflowSpec], set[str]]:
-        new_workflows: Dict[str, WorkflowSpec] = {}
+        return self._load_typed_objects(
+            kind="workflow",
+            root=workflows_dir,
+            record_failure=record_failure,
+            validator=WorkflowSpec.model_validate,
+        )
+
+    def _load_typed_objects(
+        self,
+        *,
+        kind: str,
+        root: Path,
+        record_failure,
+        validator: Callable[[dict[str, Any]], _SpecT],
+    ) -> tuple[Dict[str, _SpecT], set[str]]:
+        loaded: Dict[str, _SpecT] = {}
         seen_ids: dict[str, Path] = {}
         preserve_ids: set[str] = set()
         duplicate_ids: set[str] = set()
 
-        for path in self._iter_yaml_files(workflows_dir):
+        for path in self._iter_yaml_files(root):
             try:
                 payload = self._load_yaml(path)
             except (OSError, ValueError, yaml.YAMLError) as exc:
-                record_failure("workflow", path, exc)
+                record_failure(kind, path, exc)
                 continue
 
             raw_id = payload.get("id") if isinstance(payload, dict) else None
             try:
-                spec = WorkflowSpec.model_validate(payload)
+                spec = validator(payload)
             except ValidationError as exc:
-                record_failure("workflow", path, exc)
+                record_failure(kind, path, exc)
                 if isinstance(raw_id, str):
                     preserve_ids.add(raw_id)
                 continue
 
-            if spec.id in duplicate_ids:
-                record_failure("workflow", path, ValueError(f"Duplicate workflow id: {spec.id}"))
+            spec_id = getattr(spec, "id", None)
+            if not isinstance(spec_id, str) or not spec_id:
+                record_failure(kind, path, ValueError(f"Invalid {kind} id: {spec_id!r}"))
                 continue
 
-            if spec.id in seen_ids:
-                duplicate_ids.add(spec.id)
-                record_failure("workflow", path, ValueError(f"Duplicate workflow id: {spec.id}"))
-                record_failure("workflow", seen_ids[spec.id], ValueError(f"Duplicate workflow id: {spec.id}"))
-                new_workflows.pop(spec.id, None)
+            if spec_id in duplicate_ids:
+                record_failure(kind, path, ValueError(f"Duplicate {kind} id: {spec_id}"))
                 continue
 
-            seen_ids[spec.id] = path
-            new_workflows[spec.id] = spec
+            if spec_id in seen_ids:
+                duplicate_ids.add(spec_id)
+                record_failure(kind, path, ValueError(f"Duplicate {kind} id: {spec_id}"))
+                record_failure(kind, seen_ids[spec_id], ValueError(f"Duplicate {kind} id: {spec_id}"))
+                loaded.pop(spec_id, None)
+                continue
 
-        return new_workflows, preserve_ids
+            seen_ids[spec_id] = path
+            loaded[spec_id] = spec
+
+        return loaded, preserve_ids
 
     def _iter_yaml_files(self, root: Path) -> List[Path]:
         if not root.exists() or not root.is_dir():
@@ -215,10 +207,15 @@ def _expand_env_mapping(data: dict[str, Any]) -> dict[str, Any]:
     expanded: dict[str, Any] = {}
     for key, value in data.items():
         if isinstance(value, str):
-            expanded[key] = _ENV_VAR_PATTERN.sub(
-                lambda m: os.environ.get(m.group(1), ""),
-                value,
-            )
+            expanded[key] = _ENV_VAR_PATTERN.sub(_require_env_var, value)
         else:
             expanded[key] = value
     return expanded
+
+
+def _require_env_var(match: re.Match[str]) -> str:
+    name = match.group(1)
+    raw = os.getenv(name)
+    if raw is None:
+        raise ValueError(f"Missing required environment variable: {name}")
+    return raw
