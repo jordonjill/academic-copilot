@@ -137,6 +137,23 @@ def test_chat_rejects_unknown_workflow(monkeypatch):
     assert response.status_code == 400
 
 
+def test_chat_rate_limit_returns_429(monkeypatch):
+    monkeypatch.setenv("CHAT_RATE_LIMIT_ENABLED", "true")
+    monkeypatch.setenv("CHAT_RATE_LIMIT_REQUESTS", "1")
+    monkeypatch.setenv("CHAT_RATE_LIMIT_WINDOW_SECONDS", "60")
+    monkeypatch.setattr(
+        "src.interfaces.api.routes.chat.create_copilot",
+        lambda: _DummyCopilot({}),
+    )
+
+    client = _build_client()
+    first = client.post("/chat", headers=AUTH_HEADERS, json={"message": "Hello"})
+    second = client.post("/chat", headers=AUTH_HEADERS, json={"message": "Hello again"})
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+
+
 def test_admin_reload_rejected_when_admin_key_not_configured(monkeypatch):
     monkeypatch.delenv("ADMIN_ACCESS_KEY", raising=False)
     client = _build_client()

@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
 import threading
 import uuid
 from collections import OrderedDict
@@ -39,12 +41,21 @@ load_dotenv()
 _CONFIG_ROOT = Path(__file__).resolve().parents[3] / "config"
 _CONFIG_REGISTRY = ConfigRegistry(config_root=_CONFIG_ROOT)
 logger = logging.getLogger(__name__)
-_APP_LOCK = threading.Lock()
-_COPILOT_APP: Optional["AcademicCopilotApp"] = None
 _DEFAULT_CHAT_TURN_TIMEOUT_SECONDS = 120.0
 _MAX_LAST_STATES = 128
-_TIMEOUT_RELATION_WARNED_FOR: tuple[float, float, float] | None = None
+_TIMEOUT_RELATION_WARNED_FOR: tuple[float, float, float, float] | None = None
 _TIMEOUT_RELATION_LOCK = threading.Lock()
+_ENV_PLACEHOLDER_PATTERN = re.compile(r"\$\{\w+\}")
+_LOG_SENSITIVE_KEY_MARKERS = (
+    "api_key",
+    "access_key",
+    "authorization",
+    "token",
+    "secret",
+    "password",
+    "cookie",
+)
+_LOG_MAX_STRING_LEN = 256
 
 
 def get_config_registry() -> ConfigRegistry:
@@ -95,6 +106,35 @@ def validate_runtime_bindings() -> list[Dict[str, str]]:
                         "error": f"Unknown llm.name: {llm_name}",
                     }
                 )
+            else:
+                llm_spec = _CONFIG_REGISTRY.llms.get(llm_name)
+                for field_name in ("model_name", "base_url", "api_key_env"):
+                    raw_value = getattr(llm_spec, field_name, None)
+                    if _has_unresolved_env_placeholder(raw_value):
+                        errors.append(
+                            {
+                                "type": "binding",
+                                "path": f"agent:{agent_id}",
+                                "error": (
+                                    f"LLM profile '{llm_name}' has unresolved env placeholder "
+                                    f"in field '{field_name}': {raw_value}"
+                                ),
+                            }
+                        )
+                api_key_env = getattr(llm_spec, "api_key_env", None)
+                if isinstance(api_key_env, str) and api_key_env.strip():
+                    env_name = api_key_env.strip()
+                    env_value = os.getenv(env_name, "").strip()
+                    if not env_value:
+                        errors.append(
+                            {
+                                "type": "binding",
+                                "path": f"agent:{agent_id}",
+                                "error": (
+                                    f"LLM profile '{llm_name}' requires missing env var: {env_name}"
+                                ),
+                            }
+                        )
 
         if spec.mode == "chain" and spec.tools:
             errors.append(
@@ -205,18 +245,14 @@ class AcademicCopilotApp:
                 next_node=step.get("next_node"),
             )
 
-        loop = asyncio.get_event_loop()
         timeout_seconds = _chat_turn_timeout_seconds()
         _warn_timeout_misconfiguration(timeout_seconds)
         try:
             result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None,
-                    lambda: self.runtime.run_turn(
-                        state,
-                        requested_workflow_id=workflow_id,
-                        step_callback=_capture_step,
-                    ),
+                self.runtime.run_turn_async(
+                    state,
+                    requested_workflow_id=workflow_id,
+                    step_callback=_capture_step,
                 ),
                 timeout=timeout_seconds,
             )
@@ -232,11 +268,8 @@ class AcademicCopilotApp:
             )
 
         try:
-            llm = self.runtime.resolve_default_llm()
-            await loop.run_in_executor(
-                None,
-                lambda: self.memory.persist_turn(state, llm),
-            )
+            llm = await asyncio.to_thread(self.runtime.resolve_default_llm)
+            await asyncio.to_thread(self.memory.persist_turn, state, llm)
         except Exception as exc:
             logger.exception("Memory pipeline failed (non-fatal): %s", exc)
 
@@ -369,11 +402,7 @@ class AcademicCopilotApp:
 # ── 工厂函数 ─────────────────────────────────────────────────────────────────
 
 def create_copilot(model_type: str = "ollama") -> AcademicCopilotApp:
-    global _COPILOT_APP
-    with _APP_LOCK:
-        if _COPILOT_APP is None or _COPILOT_APP.model_type != model_type:
-            _COPILOT_APP = AcademicCopilotApp(model_type=model_type)
-        return _COPILOT_APP
+    return AcademicCopilotApp(model_type=model_type)
 
 
 def _ts() -> str:
@@ -390,18 +419,49 @@ def _memory_probe() -> Dict[str, Any]:
 
 
 def _log_event(event: str, **fields: Any) -> None:
-    payload = {"event": event, "timestamp": _ts(), **fields}
+    payload = {"event": event, "timestamp": _ts(), **_sanitize_for_log(fields)}
     logger.info(json.dumps(payload, ensure_ascii=False, default=str))
+
+
+def _sanitize_for_log(value: Any, *, key_name: str = "") -> Any:
+    lower_key = key_name.lower()
+    if any(marker in lower_key for marker in _LOG_SENSITIVE_KEY_MARKERS):
+        return "***REDACTED***"
+
+    if isinstance(value, dict):
+        return {str(k): _sanitize_for_log(v, key_name=str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_for_log(item, key_name=key_name) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_for_log(item, key_name=key_name) for item in value)
+    if isinstance(value, str):
+        if value.lower().startswith("bearer "):
+            return "Bearer ***REDACTED***"
+        if value.startswith("sk-") and len(value) > 12:
+            return "***REDACTED***"
+        if len(value) > _LOG_MAX_STRING_LEN:
+            return value[:_LOG_MAX_STRING_LEN] + "...<truncated>"
+    return value
 
 
 def _chat_turn_timeout_seconds() -> float:
     return read_env_float("CHAT_TURN_TIMEOUT_SECONDS", _DEFAULT_CHAT_TURN_TIMEOUT_SECONDS)
 
 
+def _llm_request_timeout_seconds() -> float:
+    return read_env_float("LLM_REQUEST_TIMEOUT_SECONDS", 60.0)
+
+
+def _has_unresolved_env_placeholder(value: Any) -> bool:
+    return isinstance(value, str) and _ENV_PLACEHOLDER_PATTERN.search(value) is not None
+
+
 def _warn_timeout_misconfiguration(chat_timeout: float) -> None:
+    llm_timeout = _llm_request_timeout_seconds()
     supervisor_timeout = read_env_float("SUPERVISOR_MAX_WALL_TIME_SECONDS", 180.0)
     workflow_timeout = read_env_float("WORKFLOW_MAX_WALL_TIME_SECONDS", 300.0)
     key = (
+        round(llm_timeout, 3),
         round(chat_timeout, 3),
         round(supervisor_timeout, 3),
         round(workflow_timeout, 3),
@@ -413,11 +473,12 @@ def _warn_timeout_misconfiguration(chat_timeout: float) -> None:
         _TIMEOUT_RELATION_WARNED_FOR = key
 
     min_runtime_timeout = min(supervisor_timeout, workflow_timeout)
-    if chat_timeout >= min_runtime_timeout:
+    if llm_timeout >= chat_timeout or chat_timeout >= min_runtime_timeout:
         logger.warning(
-            "Timeout configuration may be suboptimal: CHAT_TURN_TIMEOUT_SECONDS(%.1f) "
-            ">= min(SUPERVISOR_MAX_WALL_TIME_SECONDS=%.1f, WORKFLOW_MAX_WALL_TIME_SECONDS=%.1f). "
-            "Consider setting chat timeout smaller than runtime loop timeouts.",
+            "Timeout configuration may be suboptimal: require "
+            "LLM_REQUEST_TIMEOUT_SECONDS(%.1f) < CHAT_TURN_TIMEOUT_SECONDS(%.1f) < "
+            "min(SUPERVISOR_MAX_WALL_TIME_SECONDS=%.1f, WORKFLOW_MAX_WALL_TIME_SECONDS=%.1f).",
+            llm_timeout,
             chat_timeout,
             supervisor_timeout,
             workflow_timeout,
@@ -426,3 +487,19 @@ def _warn_timeout_misconfiguration(chat_timeout: float) -> None:
 
 def warn_timeout_misconfiguration_once() -> None:
     _warn_timeout_misconfiguration(_chat_turn_timeout_seconds())
+
+
+def validate_timeout_hierarchy_or_raise() -> None:
+    llm_timeout = _llm_request_timeout_seconds()
+    chat_timeout = _chat_turn_timeout_seconds()
+    supervisor_timeout = read_env_float("SUPERVISOR_MAX_WALL_TIME_SECONDS", 180.0)
+    workflow_timeout = read_env_float("WORKFLOW_MAX_WALL_TIME_SECONDS", 300.0)
+    min_runtime_timeout = min(supervisor_timeout, workflow_timeout)
+    if not (llm_timeout < chat_timeout < min_runtime_timeout):
+        raise ValueError(
+            "Invalid timeout hierarchy: expected "
+            f"LLM_REQUEST_TIMEOUT_SECONDS({llm_timeout}) < "
+            f"CHAT_TURN_TIMEOUT_SECONDS({chat_timeout}) < "
+            f"min(SUPERVISOR_MAX_WALL_TIME_SECONDS={supervisor_timeout}, "
+            f"WORKFLOW_MAX_WALL_TIME_SECONDS={workflow_timeout})"
+        )

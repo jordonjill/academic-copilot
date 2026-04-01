@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -11,6 +12,7 @@ from typing import Any, Callable, Dict, Optional
 
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.output_parsers import JsonOutputParser
 from langchain_openai import ChatOpenAI
 
 from src.application.runtime.agent_factory import build_agent_from_spec
@@ -31,6 +33,7 @@ _DEFAULT_SUPERVISOR_AGENT_ID = "supervisor"
 _SUPERVISOR_MAX_SUBAGENT_CALLS_ENV = "SUPERVISOR_MAX_SUBAGENT_CALLS_PER_AGENT"
 _ENV_PLACEHOLDER_PATTERN = re.compile(r"\$\{\w+\}")
 logger = logging.getLogger(__name__)
+_SUPERVISOR_DECISION_PARSER = JsonOutputParser()
 
 
 class RuntimeEngine:
@@ -39,7 +42,6 @@ class RuntimeEngine:
     def __init__(self, registry: ConfigRegistry) -> None:
         self.registry = registry
         self._llm_cache: OrderedDict[tuple[str, str, str, str, str], BaseLanguageModel] = OrderedDict()
-        self._llm_cache_inflight: dict[tuple[str, str, str, str, str], threading.Event] = {}
         self._llm_cache_max_size = max(1, _read_int_env("LLM_CACHE_MAX_SIZE", 128))
         self._chain_context_messages_window = max(1, _read_int_env("CHAIN_CONTEXT_MESSAGES_WINDOW", 12))
         self._llm_cache_lock = threading.Lock()
@@ -68,6 +70,28 @@ class RuntimeEngine:
         state["runtime"]["status"] = "completed"
         return self._build_result(state)
 
+    async def run_turn_async(
+        self,
+        state: RuntimeState,
+        requested_workflow_id: Optional[str] = None,
+        step_callback: Optional[StepCallback] = None,
+    ) -> Dict[str, Any]:
+        self._ensure_registry_loaded()
+        state["runtime"]["status"] = "running"
+        try:
+            await self._run_supervisor_loop_async(
+                state=state,
+                requested_workflow_id=requested_workflow_id,
+                step_callback=step_callback,
+            )
+        except Exception as exc:
+            state["runtime"]["status"] = "failed"
+            state["errors"]["last_error"] = str(exc)
+            raise
+
+        state["runtime"]["status"] = "completed"
+        return self._build_result(state)
+
     def _ensure_registry_loaded(self) -> None:
         if not self.registry.agents and not self.registry.workflows:
             self.registry.reload()
@@ -76,6 +100,15 @@ class RuntimeEngine:
         llm = self._resolve_default_llm()
         messages = list(state["context"].get("messages", []))
         response = llm.invoke([SystemMessage(content=CHITCHAT_SYSTEM)] + messages)
+        text = self._coerce_text(response)
+        state["io"]["last_model_output"] = text
+        state["output"]["final_text"] = text
+        state["context"]["messages"].append(AIMessage(content=text))
+
+    async def _run_chitchat_async(self, state: RuntimeState) -> None:
+        llm = self._resolve_default_llm()
+        messages = list(state["context"].get("messages", []))
+        response = await self._invoke_async(llm, [SystemMessage(content=CHITCHAT_SYSTEM)] + messages)
         text = self._coerce_text(response)
         state["io"]["last_model_output"] = text
         state["output"]["final_text"] = text
@@ -200,6 +233,123 @@ class RuntimeEngine:
             fallback = state["io"].get("last_model_output") or "No output produced."
             state["output"]["final_text"] = fallback
 
+    async def _run_supervisor_loop_async(
+        self,
+        state: RuntimeState,
+        requested_workflow_id: Optional[str],
+        step_callback: Optional[StepCallback],
+    ) -> None:
+        if requested_workflow_id:
+            if requested_workflow_id not in self.registry.workflows:
+                raise ValueError(f"Unknown workflow_id: {requested_workflow_id}")
+            await self._run_workflow_async(state, requested_workflow_id, step_callback)
+            await self._finalize_with_supervisor_async(state, requested_workflow_id=requested_workflow_id)
+            return
+
+        supervisor_spec = self._resolve_supervisor_spec()
+        if supervisor_spec is None:
+            await self._run_chitchat_async(state)
+            return
+        if supervisor_spec.mode != "chain":
+            await self._run_chitchat_async(state)
+            return
+
+        max_steps = max(1, _read_int_env("SUPERVISOR_MAX_STEPS", 8))
+        max_subagent_calls_per_agent = _read_int_env(_SUPERVISOR_MAX_SUBAGENT_CALLS_ENV, 2)
+        max_subagent_calls_per_agent = max(0, max_subagent_calls_per_agent)
+        max_wall_seconds = read_env_float("SUPERVISOR_MAX_WALL_TIME_SECONDS", 180.0)
+        started = perf_counter()
+        subagent_call_counts: dict[str, int] = {}
+
+        for _ in range(max_steps):
+            if perf_counter() - started > max_wall_seconds:
+                raise TimeoutError(f"Supervisor loop timeout after {max_wall_seconds:.1f} seconds")
+            decision = await self._decide_next_action_async(
+                state=state,
+                supervisor_spec=supervisor_spec,
+                requested_workflow_id=requested_workflow_id,
+            )
+            action = decision.get("action")
+            if not isinstance(action, str):
+                action = "direct_reply"
+            action = action.strip().lower()
+            logger.info(
+                "supervisor.decision action=%s target=%s done=%s step_count=%s",
+                action,
+                decision.get("target"),
+                bool(decision.get("done")),
+                state["runtime"].get("step_count", 0),
+            )
+
+            if action == "start_workflow":
+                workflow_id = self._resolve_workflow_target(decision, state)
+                if workflow_id and workflow_id in self.registry.workflows:
+                    await self._run_workflow_async(state, workflow_id, step_callback)
+                    await self._finalize_with_supervisor_async(state, requested_workflow_id=workflow_id)
+                    return
+                action = "direct_reply"
+
+            if action == "run_subagent":
+                agent_id = self._resolve_subagent_target(decision)
+                if agent_id and agent_id in self.registry.agents and agent_id != supervisor_spec.id:
+                    calls_used = subagent_call_counts.get(agent_id, 0)
+                    if calls_used >= max_subagent_calls_per_agent:
+                        logger.warning(
+                            "supervisor.subagent_limit_reached agent_id=%s limit=%s",
+                            agent_id,
+                            max_subagent_calls_per_agent,
+                        )
+                        state["context"]["messages"].append(
+                            SystemMessage(
+                                content=(
+                                    f"Supervisor guardrail: subagent '{agent_id}' call limit reached "
+                                    f"({max_subagent_calls_per_agent}) in current turn. Choose another action."
+                                )
+                            )
+                        )
+                        continue
+
+                    instruction = decision.get("instruction")
+                    if isinstance(instruction, str) and instruction.strip():
+                        state["artifacts"]["supervisor_instruction"] = instruction
+                        state["context"]["messages"].append(
+                            HumanMessage(content=f"Supervisor task for {agent_id}: {instruction}")
+                        )
+                    await self._execute_agent_async(state, agent_id, agent_id)
+                    subagent_call_counts[agent_id] = calls_used + 1
+                    state["runtime"]["step_count"] += 1
+                    if step_callback is not None:
+                        step_callback(
+                            {
+                                "node_name": agent_id,
+                                "step_number": state["runtime"]["step_count"],
+                                "agent_id": agent_id,
+                                "next_node": None,
+                                "supervisor_reason": "supervisor selected direct subagent execution",
+                                "last_model_output": state["io"].get("last_model_output"),
+                                "tool_outputs": list(state["io"].get("last_tool_outputs", [])),
+                            }
+                        )
+                    if decision.get("done") and state["output"].get("final_text"):
+                        return
+                    continue
+                action = "direct_reply"
+
+            if action == "direct_reply":
+                final_text = decision.get("final_text")
+                if not isinstance(final_text, str) or not final_text.strip():
+                    final_text = decision.get("message")
+                if not isinstance(final_text, str) or not final_text.strip():
+                    final_text = state["io"].get("last_model_output") or "No output produced."
+                state["output"]["final_text"] = final_text
+                state["io"]["last_model_output"] = final_text
+                state["context"]["messages"].append(AIMessage(content=final_text))
+                return
+
+        if not state["output"].get("final_text"):
+            fallback = state["io"].get("last_model_output") or "No output produced."
+            state["output"]["final_text"] = fallback
+
     def _decide_next_action(
         self,
         state: RuntimeState,
@@ -224,7 +374,38 @@ class RuntimeEngine:
                 state["runtime"].get("step_count", 0),
                 requested_workflow_id,
             )
-        parsed = self._try_parse_json(text)
+        parsed = self._try_parse_supervisor_decision_json(text)
+        state["io"]["last_model_output"] = text
+        if isinstance(parsed, dict):
+            return self._normalize_supervisor_decision(parsed, text, state)
+        return {"action": "direct_reply", "final_text": text}
+
+    async def _decide_next_action_async(
+        self,
+        state: RuntimeState,
+        supervisor_spec: AgentSpec,
+        requested_workflow_id: Optional[str],
+    ) -> Dict[str, Any]:
+        llm = self._resolve_llm(supervisor_spec)
+        runnable = build_agent_from_spec(supervisor_spec, llm, self._resolve_tool)
+        raw = await self._invoke_async(
+            runnable,
+            self._build_supervisor_payload(
+                state=state,
+                supervisor_spec=supervisor_spec,
+                requested_workflow_id=requested_workflow_id,
+                workflow_completed=False,
+            ),
+        )
+        text = self._coerce_text(raw)
+        if not text.strip():
+            logger.warning(
+                "supervisor.empty_decision_output agent_id=%s step_count=%s workflow_id=%s",
+                supervisor_spec.id,
+                state["runtime"].get("step_count", 0),
+                requested_workflow_id,
+            )
+        parsed = self._try_parse_supervisor_decision_json(text)
         state["io"]["last_model_output"] = text
         if isinstance(parsed, dict):
             return self._normalize_supervisor_decision(parsed, text, state)
@@ -309,7 +490,41 @@ class RuntimeEngine:
             )
         )
         text = self._coerce_text(raw)
-        parsed = self._try_parse_json(text)
+        parsed = self._try_parse_supervisor_decision_json(text)
+        decision = self._normalize_supervisor_decision(parsed, text, state) if isinstance(parsed, dict) else {
+            "action": "direct_reply",
+            "final_text": text,
+        }
+        if decision.get("action") != "direct_reply":
+            return
+        final_text = decision.get("final_text")
+        if isinstance(final_text, str) and final_text.strip():
+            state["output"]["final_text"] = final_text
+            state["io"]["last_model_output"] = final_text
+            state["context"]["messages"].append(AIMessage(content=final_text))
+
+    async def _finalize_with_supervisor_async(
+        self,
+        state: RuntimeState,
+        requested_workflow_id: Optional[str],
+    ) -> None:
+        supervisor_spec = self._resolve_supervisor_spec()
+        if supervisor_spec is None:
+            return
+
+        llm = self._resolve_llm(supervisor_spec)
+        runnable = build_agent_from_spec(supervisor_spec, llm, self._resolve_tool)
+        raw = await self._invoke_async(
+            runnable,
+            self._build_supervisor_payload(
+                state=state,
+                supervisor_spec=supervisor_spec,
+                requested_workflow_id=requested_workflow_id,
+                workflow_completed=True,
+            ),
+        )
+        text = self._coerce_text(raw)
+        parsed = self._try_parse_supervisor_decision_json(text)
         decision = self._normalize_supervisor_decision(parsed, text, state) if isinstance(parsed, dict) else {
             "action": "direct_reply",
             "final_text": text,
@@ -399,6 +614,83 @@ class RuntimeEngine:
             visit_counts[next_node] = visit_counts.get(next_node, 0) + 1
             current_node = next_node
 
+    async def _run_workflow_async(
+        self,
+        state: RuntimeState,
+        workflow_id: str,
+        step_callback: Optional[StepCallback],
+    ) -> None:
+        state["runtime"]["mode"] = "workflow"
+        state["runtime"]["workflow_id"] = workflow_id
+        spec = self.registry.workflows[workflow_id]
+        runtime = WorkflowRuntime(spec, agent_runner=None)
+
+        current_node = spec.entry_node
+        visit_counts: dict[str, int] = {current_node: 1}
+        max_wall_seconds = read_env_float("WORKFLOW_MAX_WALL_TIME_SECONDS", 300.0)
+        started = perf_counter()
+
+        while True:
+            if perf_counter() - started > max_wall_seconds:
+                raise TimeoutError(f"Workflow timeout after {max_wall_seconds:.1f} seconds")
+            runtime.enforce_limits(
+                {
+                    "_step_count": state["runtime"]["step_count"],
+                    "_loop_count": state["runtime"]["loop_count"],
+                }
+            )
+            state["runtime"]["current_node"] = current_node
+            logger.info(
+                "workflow.step workflow_id=%s current_node=%s step_count=%s loop_count=%s",
+                workflow_id,
+                current_node,
+                state["runtime"].get("step_count", 0),
+                state["runtime"].get("loop_count", 0),
+            )
+
+            node_spec = spec.nodes.get(current_node)
+            if not node_spec:
+                raise RuntimeError(f"Node not found in workflow: {current_node}")
+
+            node_type = node_spec.get("type")
+            if node_type == "terminal":
+                fallback = self._best_available_final_text(state)
+                if fallback:
+                    state["output"]["final_text"] = fallback
+                break
+
+            if node_type != "agent":
+                raise RuntimeError(f"Unsupported node type: {node_type}")
+
+            agent_id = node_spec.get("agent_id")
+            if not isinstance(agent_id, str):
+                raise RuntimeError(f"Invalid agent_id for node: {current_node}")
+
+            await self._execute_agent_async(state, current_node, agent_id)
+            state["runtime"]["step_count"] += 1
+
+            next_node = runtime.next_node(current_node, state)
+            runtime.assert_transition_allowed(current_node, next_node)
+            state["runtime"]["current_node"] = next_node
+
+            if step_callback is not None:
+                step_callback(
+                    {
+                        "node_name": current_node,
+                        "step_number": state["runtime"]["step_count"],
+                        "agent_id": agent_id,
+                        "next_node": next_node,
+                        "supervisor_reason": "workflow auto transition",
+                        "last_model_output": state["io"].get("last_model_output"),
+                        "tool_outputs": list(state["io"].get("last_tool_outputs", [])),
+                    }
+                )
+
+            if visit_counts.get(next_node, 0) > 0:
+                state["runtime"]["loop_count"] += 1
+            visit_counts[next_node] = visit_counts.get(next_node, 0) + 1
+            current_node = next_node
+
     def _execute_agent(self, state: RuntimeState, node_name: str, agent_id: str) -> None:
         if agent_id not in self.registry.agents:
             raise RuntimeError(f"Agent not found: {agent_id}")
@@ -422,9 +714,58 @@ class RuntimeEngine:
 
         self._apply_agent_output(state, node_name, agent_id, text, parsed)
 
+    async def _execute_agent_async(self, state: RuntimeState, node_name: str, agent_id: str) -> None:
+        if agent_id not in self.registry.agents:
+            raise RuntimeError(f"Agent not found: {agent_id}")
+
+        spec = self.registry.agents[agent_id]
+        llm = self._resolve_llm(spec)
+        runnable = build_agent_from_spec(spec, llm, self._resolve_tool)
+
+        if spec.mode == "react":
+            await self._execute_react_agent_async(state, node_name, agent_id, runnable)
+            return
+
+        payload = self._build_chain_payload(state, node_name, agent_id)
+        raw = await self._invoke_async(runnable, payload)
+        text = self._coerce_text(raw)
+        parsed = self._try_parse_json(text)
+
+        state["io"]["last_model_output"] = text
+        state["io"]["last_tool_outputs"] = []
+        state["context"]["messages"].append(AIMessage(content=text))
+
+        self._apply_agent_output(state, node_name, agent_id, text, parsed)
+
     def _execute_react_agent(self, state: RuntimeState, node_name: str, agent_id: str, runnable: Any) -> None:
         messages = list(state["context"].get("messages", []))
         raw = runnable.invoke({"messages": messages})
+
+        next_messages = raw.get("messages") if isinstance(raw, dict) else None
+        if isinstance(next_messages, list) and next_messages:
+            state["context"]["messages"] = next_messages
+            ai_text = self._extract_last_ai_text(next_messages)
+            tool_outputs = self._extract_tool_outputs(next_messages)
+        else:
+            ai_text = self._coerce_text(raw)
+            tool_outputs = []
+            state["context"]["messages"].append(AIMessage(content=ai_text))
+
+        parsed = self._try_parse_json(ai_text)
+        state["io"]["last_model_output"] = ai_text
+        state["io"]["last_tool_outputs"] = tool_outputs
+
+        self._apply_agent_output(state, node_name, agent_id, ai_text, parsed)
+
+    async def _execute_react_agent_async(
+        self,
+        state: RuntimeState,
+        node_name: str,
+        agent_id: str,
+        runnable: Any,
+    ) -> None:
+        messages = list(state["context"].get("messages", []))
+        raw = await self._invoke_async(runnable, {"messages": messages})
 
         next_messages = raw.get("messages") if isinstance(raw, dict) else None
         if isinstance(next_messages, list) and next_messages:
@@ -547,47 +888,20 @@ class RuntimeEngine:
         if api_key:
             kwargs["api_key"] = api_key
 
-        while True:
-            create_llm = False
-            wait_event: threading.Event | None = None
-            with self._llm_cache_lock:
-                cached = self._llm_cache.get(key)
-                if cached is not None:
-                    self._llm_cache_hits += 1
-                    self._llm_cache.move_to_end(key)
-                    return cached
+        with self._llm_cache_lock:
+            cached = self._llm_cache.get(key)
+            if cached is not None:
+                self._llm_cache_hits += 1
+                self._llm_cache.move_to_end(key)
+                return cached
 
-                inflight = self._llm_cache_inflight.get(key)
-                if inflight is not None:
-                    wait_event = inflight
-                else:
-                    self._llm_cache_misses += 1
-                    wait_event = threading.Event()
-                    self._llm_cache_inflight[key] = wait_event
-                    create_llm = True
-
-            if not create_llm:
-                wait_event.wait()
-                continue
-
-            try:
-                llm = ChatOpenAI(**kwargs)
-                with self._llm_cache_lock:
-                    existing = self._llm_cache.get(key)
-                    if existing is not None:
-                        self._llm_cache_hits += 1
-                        self._llm_cache.move_to_end(key)
-                        return existing
-                    while len(self._llm_cache) >= self._llm_cache_max_size:
-                        self._llm_cache.popitem(last=False)
-                    self._llm_cache[key] = llm
-                    self._llm_cache.move_to_end(key)
-                    return llm
-            finally:
-                with self._llm_cache_lock:
-                    inflight_done = self._llm_cache_inflight.pop(key, None)
-                    if inflight_done is not None:
-                        inflight_done.set()
+            self._llm_cache_misses += 1
+            llm = ChatOpenAI(**kwargs)
+            while len(self._llm_cache) >= self._llm_cache_max_size:
+                self._llm_cache.popitem(last=False)
+            self._llm_cache[key] = llm
+            self._llm_cache.move_to_end(key)
+            return llm
 
     def _available_agents(self, supervisor_spec: AgentSpec) -> list[str]:
         return sorted(
@@ -701,6 +1015,15 @@ class RuntimeEngine:
             raise ValueError(f"Tool unavailable: {tool_id}")
         return tool
 
+    async def _invoke_async(self, runnable: Any, payload: Any) -> Any:
+        ainvoke = getattr(runnable, "ainvoke", None)
+        if callable(ainvoke):
+            return await ainvoke(payload)
+        invoke = getattr(runnable, "invoke", None)
+        if callable(invoke):
+            return await asyncio.to_thread(invoke, payload)
+        raise TypeError(f"Runnable {type(runnable).__name__} has neither ainvoke nor invoke")
+
     def _extract_last_ai_text(self, messages: list[BaseMessage]) -> str:
         for message in reversed(messages):
             if isinstance(message, AIMessage):
@@ -735,6 +1058,18 @@ class RuntimeEngine:
         if isinstance(raw, (dict, list)):
             return json.dumps(raw, ensure_ascii=False, default=str)
         return str(raw)
+
+    def _try_parse_supervisor_decision_json(self, text: str) -> Optional[Dict[str, Any]]:
+        raw = (text or "").strip()
+        if not raw:
+            return None
+        try:
+            parsed = _SUPERVISOR_DECISION_PARSER.parse(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+        return self._try_parse_json(raw)
 
     def _try_parse_json(self, text: str) -> Optional[Dict[str, Any]]:
         text = (text or "").strip()

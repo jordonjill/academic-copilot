@@ -15,6 +15,7 @@ import sqlite3
 import os
 import threading
 import logging
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import List, Tuple
 from src.infrastructure.config.config import CONVERSATION_DB
@@ -51,6 +52,15 @@ def _get_conn() -> sqlite3.Connection:
     _THREAD_LOCAL.conn = conn
     _THREAD_LOCAL.path = path
     return conn
+
+
+@contextmanager
+def _use_conn(conn: sqlite3.Connection | None):
+    if conn is not None:
+        yield conn
+        return
+    with _get_conn() as managed:
+        yield managed
 
 
 def init_db() -> None:
@@ -122,9 +132,20 @@ class SQLiteStore:
     def __init__(self):
         init_db()
 
-    def upsert_session(self, session_id: str, user_id: str, topic: str = "") -> None:
+    @contextmanager
+    def transaction(self):
         with _get_conn() as conn:
-            conn.execute(
+            yield conn
+
+    def upsert_session(
+        self,
+        session_id: str,
+        user_id: str,
+        topic: str = "",
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
+        with _use_conn(conn) as active_conn:
+            active_conn.execute(
                 """INSERT OR IGNORE INTO sessions (session_id, user_id, created_at, topic)
                    VALUES (?, ?, ?, ?)""",
                 (session_id, user_id, datetime.now(UTC).isoformat(), topic),
@@ -135,22 +156,28 @@ class SQLiteStore:
         session_id: str,
         messages: List[Tuple[str, str, bool, int]],
         # (role, content, is_backbone, token_estimate)
+        conn: sqlite3.Connection | None = None,
     ) -> None:
         now = datetime.now(UTC).isoformat()
-        with _get_conn() as conn:
-            conn.executemany(
+        with _use_conn(conn) as active_conn:
+            active_conn.executemany(
                 """INSERT INTO messages (session_id, role, content, timestamp, is_backbone, token_estimate)
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 [(session_id, role, content, now, int(is_backbone), tokens)
                  for role, content, is_backbone, tokens in messages],
             )
 
-    def save_raw_messages(self, session_id: str, messages: List[Tuple[str, str, int]]) -> None:
+    def save_raw_messages(
+        self,
+        session_id: str,
+        messages: List[Tuple[str, str, int]],
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
         if not messages:
             return
         now = datetime.now(UTC).isoformat()
-        with _get_conn() as conn:
-            conn.executemany(
+        with _use_conn(conn) as active_conn:
+            active_conn.executemany(
                 """INSERT INTO raw_messages (session_id, role, content, timestamp, token_estimate)
                    VALUES (?, ?, ?, ?, ?)""",
                 [(session_id, role, content, now, tokens)
@@ -163,10 +190,11 @@ class SQLiteStore:
         serialized_messages: str,
         token_count: int,
         is_compressed: bool,
+        conn: sqlite3.Connection | None = None,
     ) -> None:
         now = datetime.now(UTC).isoformat()
-        with _get_conn() as conn:
-            conn.execute(
+        with _use_conn(conn) as active_conn:
+            active_conn.execute(
                 """INSERT INTO working_context (session_id, serialized_messages, token_count, is_compressed, created_at)
                    VALUES (?, ?, ?, ?, ?)""",
                 (session_id, serialized_messages, token_count, int(is_compressed), now),
@@ -180,20 +208,28 @@ class SQLiteStore:
         post_tokens: int,
         summary_text: str,
         summary_version: str,
+        conn: sqlite3.Connection | None = None,
     ) -> None:
         digest = hashlib.sha256(summary_text.encode("utf-8")).hexdigest()
         now = datetime.now(UTC).isoformat()
-        with _get_conn() as conn:
-            conn.execute(
+        with _use_conn(conn) as active_conn:
+            active_conn.execute(
                 """INSERT INTO compression_events
                    (session_id, trigger_reason, pre_tokens, post_tokens, summary_text, summary_digest, summary_version, created_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (session_id, trigger_reason, pre_tokens, post_tokens, summary_text, digest, summary_version, now),
             )
 
-    def save_ltm_fact(self, user_id: str, session_id: str, fact_type: str, fact_content: str) -> None:
-        with _get_conn() as conn:
-            conn.execute(
+    def save_ltm_fact(
+        self,
+        user_id: str,
+        session_id: str,
+        fact_type: str,
+        fact_content: str,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
+        with _use_conn(conn) as active_conn:
+            active_conn.execute(
                 """INSERT INTO ltm_facts (user_id, session_id, fact_type, fact_content, extracted_at)
                    VALUES (?, ?, ?, ?, ?)""",
                 (user_id, session_id, fact_type, fact_content, datetime.now(UTC).isoformat()),

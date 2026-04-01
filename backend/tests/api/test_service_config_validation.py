@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from src.application.runtime.spec_models import AgentSpec, WorkflowSpec
 from src.interfaces.api import service
 
@@ -149,3 +151,87 @@ def test_validate_runtime_bindings_detects_unknown_llm_name(monkeypatch):
     assert errors
     assert errors[0]["path"] == "agent:writer"
     assert "Unknown llm.name: missing_llm" in errors[0]["error"]
+
+
+def test_validate_runtime_bindings_detects_missing_llm_api_key_env(monkeypatch):
+    agent = AgentSpec.model_validate(
+        {
+            "id": "writer",
+            "name": "Writer",
+            "mode": "chain",
+            "system_prompt": "x",
+            "tools": [],
+            "llm": {"name": "openai_default"},
+        }
+    )
+    llm_spec = SimpleNamespace(
+        model_name="gpt-4o-mini",
+        base_url="https://api.openai.com/v1",
+        api_key_env="OPENAI_API_KEY",
+    )
+    fake_registry = SimpleNamespace(
+        llms={"openai_default": llm_spec},
+        agents={"writer": agent},
+        workflows={},
+    )
+
+    monkeypatch.setattr(service, "_CONFIG_REGISTRY", fake_registry)
+    monkeypatch.setattr(service, "get_tool_manager", lambda: _FakeToolManager(set()))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    errors = service.validate_runtime_bindings()
+    assert any("requires missing env var: OPENAI_API_KEY" in err["error"] for err in errors)
+
+
+def test_validate_runtime_bindings_detects_unresolved_llm_placeholder(monkeypatch):
+    agent = AgentSpec.model_validate(
+        {
+            "id": "writer",
+            "name": "Writer",
+            "mode": "chain",
+            "system_prompt": "x",
+            "tools": [],
+            "llm": {"name": "openai_default"},
+        }
+    )
+    llm_spec = SimpleNamespace(
+        model_name="gpt-4o-mini",
+        base_url="${MISSING_BASE_URL}",
+        api_key_env="OPENAI_API_KEY",
+    )
+    fake_registry = SimpleNamespace(
+        llms={"openai_default": llm_spec},
+        agents={"writer": agent},
+        workflows={},
+    )
+
+    monkeypatch.setattr(service, "_CONFIG_REGISTRY", fake_registry)
+    monkeypatch.setattr(service, "get_tool_manager", lambda: _FakeToolManager(set()))
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    errors = service.validate_runtime_bindings()
+    assert any("unresolved env placeholder" in err["error"] for err in errors)
+
+
+def test_validate_timeout_hierarchy_or_raise_raises_for_invalid_order(monkeypatch):
+    monkeypatch.setenv("LLM_REQUEST_TIMEOUT_SECONDS", "80")
+    monkeypatch.setenv("CHAT_TURN_TIMEOUT_SECONDS", "60")
+    monkeypatch.setenv("SUPERVISOR_MAX_WALL_TIME_SECONDS", "180")
+    monkeypatch.setenv("WORKFLOW_MAX_WALL_TIME_SECONDS", "300")
+
+    with pytest.raises(ValueError, match="Invalid timeout hierarchy"):
+        service.validate_timeout_hierarchy_or_raise()
+
+
+def test_sanitize_for_log_redacts_sensitive_values():
+    payload = {
+        "access_key": "abc",
+        "Authorization": "Bearer secret-token",
+        "nested": {"api_key": "sk-abcdef1234567890"},
+        "normal": "ok",
+    }
+    sanitized = service._sanitize_for_log(payload)
+    assert sanitized["access_key"] == "***REDACTED***"
+    assert sanitized["Authorization"] == "***REDACTED***"
+    assert sanitized["nested"]["api_key"] == "***REDACTED***"
+    assert sanitized["normal"] == "ok"

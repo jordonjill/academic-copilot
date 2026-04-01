@@ -111,8 +111,6 @@ class MemoryAdapter:
         topic: str,
         messages: list[BaseMessage],
     ) -> None:
-        self.store.upsert_session(session_id, user_id, topic)
-
         backbone_rows: list[tuple[str, str, bool, int]] = []
         raw_rows: list[tuple[str, str, int]] = []
         for message in messages:
@@ -124,19 +122,21 @@ class MemoryAdapter:
             backbone_rows.append((role, content, True, token_estimate))
             raw_rows.append((role, content, token_estimate))
 
-        if backbone_rows:
-            self.store.save_messages(session_id, backbone_rows)
-        if raw_rows:
-            self.store.save_raw_messages(session_id, raw_rows)
-
         serialized = json.dumps([message_to_dict(m) for m in messages], ensure_ascii=False)
         token_count = sum(max(1, len(str(getattr(m, "content", ""))) // 4) for m in messages)
-        self.store.save_working_context_snapshot(
-            session_id=session_id,
-            serialized_messages=serialized,
-            token_count=token_count,
-            is_compressed=False,
-        )
+        with self.store.transaction() as conn:
+            self.store.upsert_session(session_id, user_id, topic, conn=conn)
+            if backbone_rows:
+                self.store.save_messages(session_id, backbone_rows, conn=conn)
+            if raw_rows:
+                self.store.save_raw_messages(session_id, raw_rows, conn=conn)
+            self.store.save_working_context_snapshot(
+                session_id=session_id,
+                serialized_messages=serialized,
+                token_count=token_count,
+                is_compressed=False,
+                conn=conn,
+            )
 
     @staticmethod
     def extract_memory_summary(messages: list[BaseMessage]) -> str:

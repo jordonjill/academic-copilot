@@ -51,6 +51,14 @@ def _safe_dir(root: Path, subdir: str) -> Path:
     return candidate
 
 
+def _is_within_root(root: Path, candidate: Path) -> bool:
+    try:
+        candidate.resolve().relative_to(root.resolve())
+        return True
+    except Exception:
+        return False
+
+
 def _is_probably_text(path: Path) -> bool:
     if path.suffix.lower() in _TEXT_SUFFIXES:
         return True
@@ -152,15 +160,22 @@ def filesystem(
     scanned_files = 0
 
     for path in search_dir.glob(pattern):
-        if not path.is_file():
+        try:
+            resolved_path = path.resolve()
+        except Exception:
+            continue
+
+        if not _is_within_root(root, resolved_path):
+            continue
+        if not resolved_path.is_file():
             continue
         scanned_files += 1
 
-        rel_path = str(path.relative_to(root))
-        suffix = path.suffix.lower()
+        rel_path = str(resolved_path.relative_to(root))
+        suffix = resolved_path.suffix.lower()
 
         if suffix == _PDF_SUFFIX:
-            text, truncated_by_chars, has_more_pages, error = _read_pdf_text(path, max_chars_per_file)
+            text, truncated_by_chars, has_more_pages, error = _read_pdf_text(resolved_path, max_chars_per_file)
             if needle and needle not in rel_path.casefold() and needle not in text.casefold():
                 continue
             truncated = truncated_by_chars or has_more_pages
@@ -179,10 +194,10 @@ def filesystem(
                 break
             continue
 
-        if not _is_probably_text(path):
+        if not _is_probably_text(resolved_path):
             continue
         try:
-            text = path.read_text(encoding="utf-8", errors="ignore")
+            text = resolved_path.read_text(encoding="utf-8", errors="ignore")
         except Exception:
             continue
         if needle and needle not in rel_path.casefold() and needle not in text.casefold():

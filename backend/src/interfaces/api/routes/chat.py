@@ -5,9 +5,10 @@ import uuid
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from src.interfaces.api.deps import verify_access_key
+from src.interfaces.api.rate_limit import enforce_chat_rate_limit
 from src.interfaces.api.schemas import ChatRequest, ChatResponse
 from src.interfaces.api.service import create_copilot, get_config_registry
 
@@ -17,7 +18,9 @@ router = APIRouter(tags=["chat"])
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(
+    http_request: Request,
     request: ChatRequest,
+    __: None = Depends(enforce_chat_rate_limit),
     _: str = Depends(verify_access_key),
 ) -> ChatResponse:
     """
@@ -27,6 +30,7 @@ async def chat(
     """
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
+    del http_request
     if request.workflow_id:
         registry = get_config_registry()
         if registry.workflows and request.workflow_id not in registry.workflows:

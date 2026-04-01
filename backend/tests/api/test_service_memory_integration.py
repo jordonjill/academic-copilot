@@ -30,13 +30,13 @@ def test_chat_async_uses_memory_pipeline(monkeypatch):
 
     app = AcademicCopilotApp()
 
-    def _fake_run_turn(state, requested_workflow_id=None, step_callback=None):
+    async def _fake_run_turn_async(state, requested_workflow_id=None, step_callback=None):
         state["context"]["messages"].append(AIMessage(content="runtime answer"))
         state["output"]["final_text"] = "runtime answer"
         return {"success": True, "type": "chat", "message": "runtime answer"}
 
     fake_llm = object()
-    monkeypatch.setattr(app.runtime, "run_turn", _fake_run_turn)
+    monkeypatch.setattr(app.runtime, "run_turn_async", _fake_run_turn_async)
     monkeypatch.setattr(app.runtime, "resolve_default_llm", lambda: fake_llm)
 
     result = asyncio.run(
@@ -72,12 +72,12 @@ def test_chat_async_keeps_last_states_per_session(monkeypatch):
     monkeypatch.setattr("src.interfaces.api.service.MemoryAdapter", lambda: _FakeMemory())
     app = AcademicCopilotApp()
 
-    def _fake_run_turn(state, requested_workflow_id=None, step_callback=None):
+    async def _fake_run_turn_async(state, requested_workflow_id=None, step_callback=None):
         del requested_workflow_id, step_callback
         state["output"]["final_text"] = state["input"]["user_text"]
         return {"success": True, "type": "chat", "message": state["input"]["user_text"]}
 
-    monkeypatch.setattr(app.runtime, "run_turn", _fake_run_turn)
+    monkeypatch.setattr(app.runtime, "run_turn_async", _fake_run_turn_async)
     monkeypatch.setattr(app.runtime, "resolve_default_llm", lambda: object())
 
     asyncio.run(app.chat_async(user_message="first", session_id="s-1"))

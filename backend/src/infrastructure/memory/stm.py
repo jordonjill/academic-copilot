@@ -17,6 +17,7 @@ import json
 import logging
 import threading
 from datetime import UTC, datetime
+import sqlite3
 from typing import Any, Dict, List
 
 from langchain_core.language_models import BaseLanguageModel
@@ -133,7 +134,13 @@ def _filter_backbone(messages: List[BaseMessage]) -> List[BaseMessage]:
     return backbone
 
 
-def _persist_backbone(store: SQLiteStore, session_id: str, backbone: List[BaseMessage]) -> None:
+def _persist_backbone(
+    store: SQLiteStore,
+    session_id: str,
+    backbone: List[BaseMessage],
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> None:
     """将对话主干写入 SQLite messages 表。"""
     rows: List[tuple[str, str, bool, int]] = []
     for m in backbone:
@@ -141,7 +148,7 @@ def _persist_backbone(store: SQLiteStore, session_id: str, backbone: List[BaseMe
         content = m.content if isinstance(m.content, str) else str(m.content)
         rows.append((role, content, True, len(content) // 4))
     if rows:
-        store.save_messages(session_id, rows)
+        store.save_messages(session_id, rows, conn=conn)
 
 
 def _serialize_messages(messages: List[BaseMessage]) -> str:
@@ -173,97 +180,101 @@ def stm_compression_node(state: dict[str, Any], llm: BaseLanguageModel) -> Dict[
     token_count = _estimate_tokens(messages)
 
     store = SQLiteStore()
-    store.upsert_session(session_id, user_id, state.get("initial_topic") or "")
-
-    backbone = _filter_backbone(messages)
-    _persist_backbone(store, session_id, backbone)
-
-    raw_rows: List[tuple[str, str, int]] = []
-    for m in messages:
-        if not isinstance(m, (HumanMessage, AIMessage)):
-            continue
-        content = m.content if isinstance(m.content, str) else json.dumps(m.content, ensure_ascii=False)
-        role = "human" if isinstance(m, HumanMessage) else "assistant"
-        raw_rows.append((role, content, _estimate_tokens([m])))
-    store.save_raw_messages(session_id, raw_rows)
-
     final_messages = messages
     final_token_count = token_count
     stm_compressed = False
 
-    threshold_exceeded = token_count > STM_TOKEN_THRESHOLD
-    if threshold_exceeded:
-        keep_recent = STM_KEEP_RECENT if STM_KEEP_RECENT > 0 else len(messages)
-        keep_recent = min(len(messages), keep_recent)
-        recent_messages = messages[-keep_recent:] if keep_recent > 0 else []
-        recent_backbone = _filter_backbone(recent_messages)
-        old_messages = (
-            backbone[: len(backbone) - len(recent_backbone)]
-            if len(backbone) - len(recent_backbone) > 0
-            else []
-        )
+    with store.transaction() as conn:
+        store.upsert_session(session_id, user_id, state.get("initial_topic") or "", conn=conn)
 
-        if old_messages:
-            conversation_text = "\n".join(
-                f"{'User' if isinstance(m, HumanMessage) else 'Assistant'}: {m.content}"
-                for m in old_messages
-            )
-            compression_chain = STM_COMPRESSION_PROMPT | llm
-            summary_response = compression_chain.invoke({"conversation_to_compress": conversation_text})
-            summary_text = _normalize_summary_text(summary_response)
+        backbone = _filter_backbone(messages)
+        _persist_backbone(store, session_id, backbone, conn=conn)
 
-            header = f"[Compressed Context — {datetime.now(UTC).strftime('%Y-%m-%d')}]"
-            compressed_messages = [
-                SystemMessage(content=f"{header}\n{summary_text}")
-            ] + recent_messages
-            final_messages = compressed_messages
-            final_token_count = _estimate_tokens(final_messages)
-            stm_compressed = True
+        raw_rows: List[tuple[str, str, int]] = []
+        for m in messages:
+            if not isinstance(m, (HumanMessage, AIMessage)):
+                continue
+            content = m.content if isinstance(m.content, str) else json.dumps(m.content, ensure_ascii=False)
+            role = "human" if isinstance(m, HumanMessage) else "assistant"
+            raw_rows.append((role, content, _estimate_tokens([m])))
+        store.save_raw_messages(session_id, raw_rows, conn=conn)
 
-            store.save_compression_event(
-                session_id=session_id,
-                trigger_reason="stm_token_threshold",
-                pre_tokens=token_count,
-                post_tokens=final_token_count,
-                summary_text=summary_text,
-                summary_version=COMPRESSION_SUMMARY_VERSION,
+        threshold_exceeded = token_count > STM_TOKEN_THRESHOLD
+        if threshold_exceeded:
+            keep_recent = STM_KEEP_RECENT if STM_KEEP_RECENT > 0 else len(messages)
+            keep_recent = min(len(messages), keep_recent)
+            recent_messages = messages[-keep_recent:] if keep_recent > 0 else []
+            recent_backbone = _filter_backbone(recent_messages)
+            old_messages = (
+                backbone[: len(backbone) - len(recent_backbone)]
+                if len(backbone) - len(recent_backbone) > 0
+                else []
             )
 
-            try:
-                from src.infrastructure.memory.ltm import extract_and_update_ltm
-
-                loop = asyncio.get_running_loop()
-                task = loop.create_task(
-                    extract_and_update_ltm(
-                        user_id=user_id,
-                        session_id=session_id,
-                        backbone=backbone,
-                        llm=llm,
-                    )
+            if old_messages:
+                conversation_text = "\n".join(
+                    f"{'User' if isinstance(m, HumanMessage) else 'Assistant'}: {m.content}"
+                    for m in old_messages
                 )
-                _track_ltm_task(task)
-            except RuntimeError:
-                logger.debug("[STM] No running event loop, skip LTM async extraction")
-            except ModuleNotFoundError as exc:
-                logger.warning("[STM] LTM module unavailable: %s", exc)
-            except Exception as exc:  # pragma: no cover - best effort
-                logger.exception("[STM] LTM async task scheduling failed: %s", exc)
-        else:
-            store.save_compression_event(
-                session_id=session_id,
-                trigger_reason="stm_token_threshold",
-                pre_tokens=token_count,
-                post_tokens=token_count,
-                summary_text="no-op compression",
-                summary_version=COMPRESSION_SUMMARY_VERSION,
-            )
+                compression_chain = STM_COMPRESSION_PROMPT | llm
+                summary_response = compression_chain.invoke({"conversation_to_compress": conversation_text})
+                summary_text = _normalize_summary_text(summary_response)
 
-    store.save_working_context_snapshot(
-        session_id,
-        _serialize_messages(final_messages),
-        final_token_count,
-        stm_compressed,
-    )
+                header = f"[Compressed Context — {datetime.now(UTC).strftime('%Y-%m-%d')}]"
+                compressed_messages = [
+                    SystemMessage(content=f"{header}\n{summary_text}")
+                ] + recent_messages
+                final_messages = compressed_messages
+                final_token_count = _estimate_tokens(final_messages)
+                stm_compressed = True
+
+                store.save_compression_event(
+                    session_id=session_id,
+                    trigger_reason="stm_token_threshold",
+                    pre_tokens=token_count,
+                    post_tokens=final_token_count,
+                    summary_text=summary_text,
+                    summary_version=COMPRESSION_SUMMARY_VERSION,
+                    conn=conn,
+                )
+
+                try:
+                    from src.infrastructure.memory.ltm import extract_and_update_ltm
+
+                    loop = asyncio.get_running_loop()
+                    task = loop.create_task(
+                        extract_and_update_ltm(
+                            user_id=user_id,
+                            session_id=session_id,
+                            backbone=backbone,
+                            llm=llm,
+                        )
+                    )
+                    _track_ltm_task(task)
+                except RuntimeError:
+                    logger.debug("[STM] No running event loop, skip LTM async extraction")
+                except ModuleNotFoundError as exc:
+                    logger.warning("[STM] LTM module unavailable: %s", exc)
+                except Exception as exc:  # pragma: no cover - best effort
+                    logger.exception("[STM] LTM async task scheduling failed: %s", exc)
+            else:
+                store.save_compression_event(
+                    session_id=session_id,
+                    trigger_reason="stm_token_threshold",
+                    pre_tokens=token_count,
+                    post_tokens=token_count,
+                    summary_text="no-op compression",
+                    summary_version=COMPRESSION_SUMMARY_VERSION,
+                    conn=conn,
+                )
+
+        store.save_working_context_snapshot(
+            session_id,
+            _serialize_messages(final_messages),
+            final_token_count,
+            stm_compressed,
+            conn=conn,
+        )
 
     if not stm_compressed:
         return {

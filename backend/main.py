@@ -15,7 +15,11 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.interfaces.api.routes import admin, chat, health
-from src.interfaces.api.service import reload_runtime_config, warn_timeout_misconfiguration_once
+from src.interfaces.api.service import (
+    reload_runtime_config,
+    validate_timeout_hierarchy_or_raise,
+    warn_timeout_misconfiguration_once,
+)
 from src.infrastructure.memory.stm import drain_ltm_tasks
 from src.infrastructure.tools.loader import initialize_tools
 
@@ -63,6 +67,7 @@ async def lifespan(app: FastAPI):
     try:
         try:
             warn_timeout_misconfiguration_once()
+            validate_timeout_hierarchy_or_raise()
             tools_report = await initialize_tools()
             runtime_report = reload_runtime_config()
             runtime_failed = runtime_report.get("failed", [])

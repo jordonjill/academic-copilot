@@ -50,6 +50,7 @@ Copy `.env.example` to `.env` and set:
 - `JINA_API_KEY` (optional)
 - `ZOTERO_API_KEY` (optional)
 - Runtime/memory/tool envs shown in `.env.example` (`SUPERVISOR_MAX_*`, `WORKFLOW_MAX_*`, `CHAT_TURN_TIMEOUT_SECONDS`, `LLM_REQUEST_TIMEOUT_SECONDS`, `CHAT_MAX_WORKERS`, etc.)
+- Rate-limit envs: `CHAT_RATE_LIMIT_ENABLED`, `CHAT_RATE_LIMIT_REQUESTS`, `CHAT_RATE_LIMIT_WINDOW_SECONDS`
 
 ## Run
 
@@ -70,6 +71,7 @@ The backend serves frontend static files from `../frontend`:
 
 - `POST /chat` (Bearer auth via `ACCESS_KEY`)
   - request: `message`, optional `workflow_id`, optional `session_id`, optional `user_id`
+  - in-memory sliding-window rate limit can be enabled via `CHAT_RATE_LIMIT_*`
 - `GET /health` (Bearer auth via `ACCESS_KEY`)
 - `POST /admin/reload` (Bearer auth via `ADMIN_ACCESS_KEY`)
   - reload tools + runtime config
@@ -91,6 +93,8 @@ Startup and runtime reload perform binding validation:
 
 - Agent `tools` must reference enabled `tool_id` entries in `tools.yaml`
 - Workflow `agent` nodes must reference existing `agent_id`
+- Agent-bound LLM profiles must not contain unresolved `${ENV_VAR}` placeholders
+- Agent-bound LLM `api_key_env` must point to a non-empty environment variable at reload/startup
 
 Validation issues are returned in reload responses under `data.runtime.failed`.
 At startup, validation issues stop the app from booting.
@@ -114,12 +118,13 @@ At startup, validation issues stop the app from booting.
 
 Recommended relation:
 
+- `LLM_REQUEST_TIMEOUT_SECONDS < CHAT_TURN_TIMEOUT_SECONDS`
 - `CHAT_TURN_TIMEOUT_SECONDS < SUPERVISOR_MAX_WALL_TIME_SECONDS`
 - `CHAT_TURN_TIMEOUT_SECONDS < WORKFLOW_MAX_WALL_TIME_SECONDS`
 
 Operational note:
 
-- `asyncio.wait_for` timeout returns control to API caller, but cannot forcibly terminate a running executor thread instantly. Keep `CHAT_MAX_WORKERS` conservative and tune model/request timeouts to avoid worker exhaustion under peak load.
+- Runtime now prefers async `ainvoke` path for supervisor/workflow agent execution, reducing dependence on threadpool workers for LLM calls.
 
 ## Memory Pipeline
 

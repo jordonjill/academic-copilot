@@ -27,8 +27,7 @@ def test_health_check_marks_unhealthy_when_memory_probe_fails(monkeypatch):
     assert result["probe"]["memory"]["ok"] is False
 
 
-def test_create_copilot_reuses_singleton_instance(monkeypatch):
-    monkeypatch.setattr(service, "_COPILOT_APP", None)
+def test_create_copilot_returns_new_instance_per_call():
     app1 = create_copilot()
     app2 = create_copilot()
-    assert app1 is app2
+    assert app1 is not app2
