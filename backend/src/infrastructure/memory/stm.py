@@ -13,6 +13,7 @@ STM（短期记忆）压缩管道。
 """
 from __future__ import annotations
 import asyncio
+import concurrent.futures
 import json
 import logging
 import threading
@@ -40,15 +41,15 @@ from src.infrastructure.memory.sqlite_store import SQLiteStore
 
 COMPRESSION_SUMMARY_VERSION = "stm-v1"
 logger = logging.getLogger(__name__)
-_LTM_TASKS: set[asyncio.Task[Any]] = set()
+_LTM_TASKS: set[asyncio.Future[Any] | concurrent.futures.Future[Any]] = set()
 _LTM_TASKS_LOCK = threading.Lock()
 
 
-def _track_ltm_task(task: asyncio.Task[Any]) -> None:
+def _track_ltm_task(task: asyncio.Future[Any] | concurrent.futures.Future[Any]) -> None:
     with _LTM_TASKS_LOCK:
         _LTM_TASKS.add(task)
 
-    def _on_done(done: asyncio.Task[Any]) -> None:
+    def _on_done(done: asyncio.Future[Any] | concurrent.futures.Future[Any]) -> None:
         with _LTM_TASKS_LOCK:
             _LTM_TASKS.discard(done)
         try:
@@ -78,9 +79,17 @@ async def drain_ltm_tasks(timeout_seconds: float = 5.0) -> dict[str, Any]:
     if not pending:
         return report
 
+    loop = asyncio.get_running_loop()
+    pending_awaitables: list[asyncio.Future[Any]] = []
+    for pending_item in pending:
+        if isinstance(pending_item, asyncio.Future):
+            pending_awaitables.append(pending_item)
+        else:
+            pending_awaitables.append(asyncio.wrap_future(pending_item, loop=loop))
+
     try:
         await asyncio.wait_for(
-            asyncio.gather(*pending, return_exceptions=True),
+            asyncio.gather(*pending_awaitables, return_exceptions=True),
             timeout=timeout_seconds,
         )
     except asyncio.TimeoutError:
@@ -88,7 +97,7 @@ async def drain_ltm_tasks(timeout_seconds: float = 5.0) -> dict[str, Any]:
         for task in pending:
             if not task.done():
                 task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
+        await asyncio.gather(*pending_awaitables, return_exceptions=True)
 
     report["completed"] = sum(1 for task in pending if task.done() and not task.cancelled())
     report["cancelled"] = sum(1 for task in pending if task.cancelled())
@@ -168,7 +177,12 @@ def _normalize_summary_text(summary_response: object) -> str:
         return str(content)
 
 
-def stm_compression_node(state: dict[str, Any], llm: BaseLanguageModel) -> Dict[str, Any]:
+def stm_compression_node(
+    state: dict[str, Any],
+    llm: BaseLanguageModel,
+    *,
+    event_loop: asyncio.AbstractEventLoop | None = None,
+) -> Dict[str, Any]:
     """STM 压缩节点：每轮 chat turn 结束后调用。"""
     if not MEMORY_PIPELINE_ENABLED:
         return {"stm_token_count": 0, "stm_compressed": False, "memory_pipeline_skipped": True}
@@ -241,14 +255,22 @@ def stm_compression_node(state: dict[str, Any], llm: BaseLanguageModel) -> Dict[
                 try:
                     from src.infrastructure.memory.ltm import extract_and_update_ltm
 
-                    loop = asyncio.get_running_loop()
-                    task = loop.create_task(
+                    target_loop = event_loop
+                    if target_loop is None:
+                        try:
+                            target_loop = asyncio.get_running_loop()
+                        except RuntimeError:
+                            target_loop = None
+                    if target_loop is None:
+                        raise RuntimeError("No target event loop for LTM scheduling")
+                    task = asyncio.run_coroutine_threadsafe(
                         extract_and_update_ltm(
                             user_id=user_id,
                             session_id=session_id,
                             backbone=backbone,
                             llm=llm,
-                        )
+                        ),
+                        target_loop,
                     )
                     _track_ltm_task(task)
                 except RuntimeError:

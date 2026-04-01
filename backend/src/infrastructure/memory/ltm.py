@@ -18,6 +18,7 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import List, Dict
 
 from langchain_core.language_models import BaseLanguageModel
@@ -29,6 +30,7 @@ from src.infrastructure.config.prompt import LTM_EXTRACTION_PROMPT
 
 _MAX_PAST_TOPICS = 20  # past_topics FIFO 滚动上限
 logger = logging.getLogger(__name__)
+_USERS_ROOT = Path(USERS_DIR).expanduser().resolve()
 
 
 def _ltm_max_workers() -> int:
@@ -62,9 +64,22 @@ def _build_backbone_text(backbone: List[BaseMessage]) -> str:
     return "\n".join(parts)
 
 
+def _safe_user_memory_path(user_id: str) -> Path:
+    normalized_user_id = (user_id or "").strip()
+    if not normalized_user_id:
+        raise ValueError("user_id must not be empty")
+    if Path(normalized_user_id).name != normalized_user_id:
+        raise ValueError(f"Invalid user_id path component: {user_id}")
+    if normalized_user_id in {".", ".."}:
+        raise ValueError(f"Invalid user_id path component: {user_id}")
+    candidate = (_USERS_ROOT / normalized_user_id / "memory.md").resolve()
+    candidate.relative_to(_USERS_ROOT)
+    return candidate
+
+
 def _load_existing_profile(user_id: str) -> Dict[str, List[str]]:
     """从 memory.md 解析现有 profile 字段（或返回空默认值）。"""
-    profile_path = os.path.join(USERS_DIR, user_id, "memory.md")
+    profile_path = _safe_user_memory_path(user_id)
     default: Dict[str, List[str]] = {
         "research_domains": [],
         "methodologies": [],
@@ -73,11 +88,11 @@ def _load_existing_profile(user_id: str) -> Dict[str, List[str]]:
         "writing_preferences": [],
         "custom_facts": [],
     }
-    if not os.path.exists(profile_path):
+    if not profile_path.exists():
         return default
 
     import re
-    with open(profile_path, "r", encoding="utf-8") as f:
+    with profile_path.open("r", encoding="utf-8") as f:
         raw = f.read()
 
     header_to_key = {
@@ -111,9 +126,8 @@ def _merge_profiles(existing: Dict[str, List[str]], new_facts: Dict[str, List[st
 
 def _write_memory_md(user_id: str, profile: Dict[str, List[str]]) -> str:
     """将 profile 序列化为 memory.md 格式并写入磁盘。"""
-    user_dir = os.path.join(USERS_DIR, user_id)
-    os.makedirs(user_dir, exist_ok=True)
-    profile_path = os.path.join(user_dir, "memory.md")
+    profile_path = _safe_user_memory_path(user_id)
+    profile_path.parent.mkdir(parents=True, exist_ok=True)
 
     now = datetime.now(UTC).isoformat()
     lines = [
@@ -140,7 +154,7 @@ def _write_memory_md(user_id: str, profile: Dict[str, List[str]]) -> str:
         "",
     ]
     content = "\n".join(lines)
-    with open(profile_path, "w", encoding="utf-8") as f:
+    with profile_path.open("w", encoding="utf-8") as f:
         f.write(content)
     return content
 

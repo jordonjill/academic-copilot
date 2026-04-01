@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import concurrent.futures
 from langchain_core.language_models.fake_chat_models import (
     FakeListChatModel,
     FakeMessagesListChatModel,
@@ -191,3 +192,45 @@ def test_snapshot_round_trip_compatible(monkeypatch, tmp_path):
     snapshot = json.loads(rows[-1]["serialized_messages"])
     restored = messages_from_dict(snapshot)
     assert restored[-1].content == "beta"
+
+
+def test_ltm_scheduled_with_run_coroutine_threadsafe(monkeypatch, tmp_path):
+    _prepare_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(stm_module, "STM_TOKEN_THRESHOLD", 1)
+    monkeypatch.setattr(stm_module, "STM_KEEP_RECENT", 1)
+
+    scheduled: dict[str, object] = {}
+
+    async def _fake_extract_and_update_ltm(*, user_id, session_id, backbone, llm):
+        del user_id, session_id, backbone, llm
+        return None
+
+    def _fake_run_coroutine_threadsafe(coro, loop):
+        scheduled["loop"] = loop
+        coro.close()
+        future: concurrent.futures.Future[None] = concurrent.futures.Future()
+        future.set_result(None)
+        return future
+
+    import src.infrastructure.memory.ltm as ltm_module
+
+    monkeypatch.setattr(ltm_module, "extract_and_update_ltm", _fake_extract_and_update_ltm)
+    monkeypatch.setattr(stm_module.asyncio, "run_coroutine_threadsafe", _fake_run_coroutine_threadsafe)
+
+    state = _base_state(
+        [
+            HumanMessage(content="old human data"),
+            AIMessage(content="old ai data"),
+            HumanMessage(content="recent human data"),
+            AIMessage(content="recent ai data"),
+        ]
+    )
+    loop_obj = object()
+    result = stm_compression_node(
+        state,
+        FakeListChatModel(responses=["compressed summary"]),
+        event_loop=loop_obj,  # type: ignore[arg-type]
+    )
+
+    assert result["stm_compressed"] is True
+    assert scheduled.get("loop") is loop_obj

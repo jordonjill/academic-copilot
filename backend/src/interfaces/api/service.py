@@ -55,6 +55,7 @@ _LOG_SENSITIVE_KEY_MARKERS = (
     "password",
     "cookie",
 )
+_LOG_SENSITIVE_SUFFIX_PATTERN = re.compile(r"(?:^|[_-])(key|token|secret|password)$", re.I)
 _LOG_MAX_STRING_LEN = 256
 
 
@@ -268,8 +269,16 @@ class AcademicCopilotApp:
             )
 
         try:
+            loop = asyncio.get_running_loop()
             llm = await asyncio.to_thread(self.runtime.resolve_default_llm)
-            await asyncio.to_thread(self.memory.persist_turn, state, llm)
+            def _persist_turn() -> dict[str, Any]:
+                try:
+                    return self.memory.persist_turn(state, llm, event_loop=loop)
+                except TypeError:
+                    # Compatibility for test doubles or legacy adapters.
+                    return self.memory.persist_turn(state, llm)
+
+            await asyncio.to_thread(_persist_turn)
         except Exception as exc:
             logger.exception("Memory pipeline failed (non-fatal): %s", exc)
 
@@ -425,7 +434,7 @@ def _log_event(event: str, **fields: Any) -> None:
 
 def _sanitize_for_log(value: Any, *, key_name: str = "") -> Any:
     lower_key = key_name.lower()
-    if any(marker in lower_key for marker in _LOG_SENSITIVE_KEY_MARKERS):
+    if any(marker in lower_key for marker in _LOG_SENSITIVE_KEY_MARKERS) or _LOG_SENSITIVE_SUFFIX_PATTERN.search(key_name):
         return "***REDACTED***"
 
     if isinstance(value, dict):

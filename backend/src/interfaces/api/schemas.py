@@ -4,9 +4,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(min_length=1, max_length=8000)
-    user_id: str = Field(default="default", min_length=1, max_length=128)
-    session_id: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    message: str = Field(min_length=1, max_length=32000)
+    user_id: str = Field(default="default", min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_@.-]+$")
+    session_id: Optional[str] = Field(default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.-]+$")
     workflow_id: Optional[str] = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
 
     model_config = ConfigDict(extra="forbid")

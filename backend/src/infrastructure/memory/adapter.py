@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -47,6 +48,8 @@ class MemoryAdapter:
         self,
         state: dict[str, Any],
         llm: BaseLanguageModel,
+        *,
+        event_loop: asyncio.AbstractEventLoop | None = None,
     ) -> dict[str, Any]:
         if not MEMORY_PIPELINE_ENABLED:
             return {"memory_pipeline_skipped": True}
@@ -63,15 +66,16 @@ class MemoryAdapter:
             topic = str(input_state.get("user_text") or "")
 
         try:
-            result = stm_compression_node(
-                {
-                    "session_id": session_id,
-                    "user_id": user_id,
-                    "initial_topic": topic,
-                    "messages": messages,
-                },
-                llm,
-            )
+            stm_state = {
+                "session_id": session_id,
+                "user_id": user_id,
+                "initial_topic": topic,
+                "messages": messages,
+            }
+            if event_loop is None:
+                result = stm_compression_node(stm_state, llm)
+            else:
+                result = stm_compression_node(stm_state, llm, event_loop=event_loop)
         except Exception as exc:
             logger.exception("STM pipeline failed, fallback to raw snapshot for session %s", session_id)
             self._persist_uncompressed_snapshot(

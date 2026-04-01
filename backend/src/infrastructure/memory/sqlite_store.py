@@ -23,6 +23,9 @@ from src.infrastructure.config.config import CONVERSATION_DB
 
 _THREAD_LOCAL = threading.local()
 logger = logging.getLogger(__name__)
+_DB_INITIALIZED = threading.Event()
+_DB_INIT_LOCK = threading.Lock()
+_DB_INITIALIZED_PATH: str | None = None
 
 
 def _db_path() -> str:
@@ -56,6 +59,12 @@ def _get_conn() -> sqlite3.Connection:
 
 @contextmanager
 def _use_conn(conn: sqlite3.Connection | None):
+    """Yield a connection with explicit transaction semantics.
+
+    - When `conn` is provided, caller owns commit/rollback boundary.
+    - When `conn` is None, this helper opens a managed connection context
+      and commits automatically on success.
+    """
     if conn is not None:
         yield conn
         return
@@ -65,8 +74,15 @@ def _use_conn(conn: sqlite3.Connection | None):
 
 def init_db() -> None:
     """建表（幂等）。"""
-    with _get_conn() as conn:
-        conn.executescript("""
+    db_path = _db_path()
+    global _DB_INITIALIZED_PATH
+    if _DB_INITIALIZED.is_set() and _DB_INITIALIZED_PATH == db_path:
+        return
+    with _DB_INIT_LOCK:
+        if _DB_INITIALIZED.is_set() and _DB_INITIALIZED_PATH == db_path:
+            return
+        with _get_conn() as conn:
+            conn.executescript("""
             CREATE TABLE IF NOT EXISTS sessions (
                 session_id  TEXT PRIMARY KEY,
                 user_id     TEXT NOT NULL,
@@ -124,6 +140,8 @@ def init_db() -> None:
                 created_at      TEXT NOT NULL
             );
         """)
+        _DB_INITIALIZED_PATH = db_path
+        _DB_INITIALIZED.set()
 
 
 class SQLiteStore:
