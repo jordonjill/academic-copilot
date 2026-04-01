@@ -1,4 +1,5 @@
 import json
+import sqlite3
 
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, message_to_dict
@@ -67,3 +68,73 @@ def test_persist_turn_updates_state_after_compression(monkeypatch, tmp_path):
     assert result["stm_compressed"] is True
     assert state["context"]["messages"][0].content.startswith("[Compressed Context")
     assert state["context"]["memory_summary"] == "fresh summary"
+
+
+def test_persist_turn_does_not_overwrite_with_empty_compressed_messages(monkeypatch, tmp_path):
+    _prepare_db(tmp_path, monkeypatch)
+
+    def _fake_stm(state, llm):
+        del state, llm
+        return {"stm_compressed": True, "messages": []}
+
+    monkeypatch.setattr("src.infrastructure.memory.adapter.stm_compression_node", _fake_stm)
+
+    adapter = MemoryAdapter(store=SQLiteStore())
+    original_messages = [
+        HumanMessage(content="old context"),
+        AIMessage(content="assistant context"),
+    ]
+    state = {
+        "input": {
+            "session_id": "s-3",
+            "user_id": "u-3",
+            "user_text": "topic",
+        },
+        "context": {
+            "messages": list(original_messages),
+            "memory_summary": "",
+        },
+        "artifacts": {"topic": "topic"},
+    }
+
+    result = adapter.persist_turn(state, FakeListChatModel(responses=["unused"]))
+
+    assert result["stm_compressed"] is True
+    assert state["context"]["messages"] == original_messages
+
+
+def test_persist_turn_fallback_persists_raw_snapshot_on_stm_failure(monkeypatch, tmp_path):
+    db_path = _prepare_db(tmp_path, monkeypatch)
+
+    def _boom(state, llm):
+        del state, llm
+        raise RuntimeError("stm failed")
+
+    monkeypatch.setattr("src.infrastructure.memory.adapter.stm_compression_node", _boom)
+
+    adapter = MemoryAdapter(store=SQLiteStore())
+    state = {
+        "input": {
+            "session_id": "s-4",
+            "user_id": "u-4",
+            "user_text": "topic",
+        },
+        "context": {
+            "messages": [
+                HumanMessage(content="hello"),
+                AIMessage(content="world"),
+            ],
+            "memory_summary": "",
+        },
+        "artifacts": {"topic": "topic"},
+    }
+
+    result = adapter.persist_turn(state, FakeListChatModel(responses=["unused"]))
+    assert result["memory_pipeline_degraded"] is True
+
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute("SELECT COUNT(*) FROM working_context WHERE session_id='s-4'").fetchone()
+        assert rows[0] >= 1
+    finally:
+        conn.close()

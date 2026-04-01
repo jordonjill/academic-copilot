@@ -14,6 +14,7 @@ from langchain_core.tools import BaseTool
 logger = logging.getLogger(__name__)
 
 _TOOL_CATALOG_PATH_ENV = "TOOL_CATALOG_PATH"
+_ENV_VAR_PATTERN = re.compile(r"\$\{(\w+)\}")
 
 
 @dataclass
@@ -47,7 +48,7 @@ def _default_catalog_path() -> Path:
 
 
 def _expand_env(value: str) -> str:
-    return re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1), ""), value)
+    return _ENV_VAR_PATTERN.sub(lambda m: os.environ.get(m.group(1), m.group(0)), value)
 
 
 class ToolManager:
@@ -169,6 +170,15 @@ class ToolManager:
             if not spec.enabled:
                 continue
             if spec.transport != "stdio":
+                continue
+            unresolved_vars: set[str] = set()
+            for env_value in (spec.env or {}).values():
+                for match in _ENV_VAR_PATTERN.findall(env_value):
+                    unresolved_vars.add(match)
+            if unresolved_vars:
+                self._failed_servers[name] = (
+                    "missing env vars for server startup: " + ", ".join(sorted(unresolved_vars))
+                )
                 continue
             mcp_server_params[name] = {
                 "command": spec.command,

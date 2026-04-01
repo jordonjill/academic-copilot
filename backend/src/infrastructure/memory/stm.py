@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from datetime import UTC, datetime
 from typing import Any, Dict, List
 
@@ -39,13 +40,16 @@ from src.infrastructure.memory.sqlite_store import SQLiteStore
 COMPRESSION_SUMMARY_VERSION = "stm-v1"
 logger = logging.getLogger(__name__)
 _LTM_TASKS: set[asyncio.Task[Any]] = set()
+_LTM_TASKS_LOCK = threading.Lock()
 
 
 def _track_ltm_task(task: asyncio.Task[Any]) -> None:
-    _LTM_TASKS.add(task)
+    with _LTM_TASKS_LOCK:
+        _LTM_TASKS.add(task)
 
     def _on_done(done: asyncio.Task[Any]) -> None:
-        _LTM_TASKS.discard(done)
+        with _LTM_TASKS_LOCK:
+            _LTM_TASKS.discard(done)
         try:
             done.result()
         except Exception as exc:  # pragma: no cover - best effort
@@ -60,7 +64,8 @@ async def drain_ltm_tasks(timeout_seconds: float = 5.0) -> dict[str, Any]:
     Returns a small report for logging/observability.
     """
     timeout_seconds = max(0.1, float(timeout_seconds))
-    pending = [task for task in list(_LTM_TASKS) if not task.done()]
+    with _LTM_TASKS_LOCK:
+        pending = [task for task in list(_LTM_TASKS) if not task.done()]
     report: dict[str, Any] = {
         "initial_pending": len(pending),
         "completed": 0,

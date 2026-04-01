@@ -168,3 +168,42 @@ def test_tool_manager_reports_mcp_server_failures(monkeypatch, tmp_path):
     assert "broken_server" in report["failed_servers"]
     assert report["failed_tools"]
     assert "broken_tool" in report["failed_tools"]
+
+
+def test_tool_manager_reports_missing_server_env_placeholders(monkeypatch, tmp_path):
+    catalog_path = tmp_path / "tools.yaml"
+    payload = {
+        "version": "1.0",
+        "servers": {
+            "zotero": {
+                "transport": "stdio",
+                "enabled": True,
+                "command": "python",
+                "args": ["fake_server.py"],
+                "env": {"ZOTERO_API_KEY": "${ZOTERO_API_KEY}"},
+            }
+        },
+        "tools": {},
+    }
+    catalog_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    monkeypatch.delenv("ZOTERO_API_KEY", raising=False)
+
+    class _NoopClient:
+        def __init__(self, connections):
+            self.connections = connections
+
+        async def get_tools(self, *, server_name=None):
+            del server_name
+            return []
+
+    monkeypatch.setitem(
+        sys.modules,
+        "langchain_mcp_adapters.client",
+        SimpleNamespace(MultiServerMCPClient=_NoopClient),
+    )
+
+    manager = ToolManager(catalog_path=catalog_path)
+    report = asyncio.run(manager.reload())
+
+    assert "zotero" in report["failed_servers"]
+    assert "missing env vars" in report["failed_servers"]["zotero"]

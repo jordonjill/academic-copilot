@@ -45,7 +45,8 @@ class AgentSpec(BaseModel):
     def _validate_tools_for_mode(self) -> "AgentSpec":
         if self.mode == "chain" and self.tools:
             raise ValueError(
-                "chain mode does not support tools; set tools to [] or switch mode to 'react'"
+                "AgentSpec.tools invalid: chain mode does not support tools; set tools to [] "
+                "or switch mode to 'react'"
             )
         return self
 

@@ -5,7 +5,7 @@ import logging
 from typing import Any
 
 from langchain_core.language_models import BaseLanguageModel
-from langchain_core.messages import BaseMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, message_to_dict
 from langchain_core.messages.utils import messages_from_dict
 
 from src.infrastructure.config.config import MEMORY_PIPELINE_ENABLED
@@ -62,23 +62,81 @@ class MemoryAdapter:
         if not isinstance(topic, str):
             topic = str(input_state.get("user_text") or "")
 
-        result = stm_compression_node(
-            {
-                "session_id": session_id,
-                "user_id": user_id,
-                "initial_topic": topic,
-                "messages": messages,
-            },
-            llm,
-        )
+        try:
+            result = stm_compression_node(
+                {
+                    "session_id": session_id,
+                    "user_id": user_id,
+                    "initial_topic": topic,
+                    "messages": messages,
+                },
+                llm,
+            )
+        except Exception as exc:
+            logger.exception("STM pipeline failed, fallback to raw snapshot for session %s", session_id)
+            self._persist_uncompressed_snapshot(
+                session_id=session_id,
+                user_id=user_id,
+                topic=topic,
+                messages=messages,
+            )
+            if not context_state.get("memory_summary"):
+                context_state["memory_summary"] = self.extract_memory_summary(messages)
+            return {
+                "stm_compressed": False,
+                "memory_pipeline_degraded": True,
+                "error": str(exc),
+            }
 
         if result.get("stm_compressed") and isinstance(result.get("messages"), list):
-            context_state["messages"] = result["messages"]
-            context_state["memory_summary"] = self.extract_memory_summary(result["messages"])
+            compressed_messages = result["messages"]
+            if compressed_messages:
+                context_state["messages"] = compressed_messages
+                context_state["memory_summary"] = self.extract_memory_summary(compressed_messages)
+            else:
+                logger.warning(
+                    "STM compression returned empty messages for session %s; keep original context messages",
+                    session_id,
+                )
         elif not context_state.get("memory_summary"):
             context_state["memory_summary"] = self.extract_memory_summary(messages)
 
         return result
+
+    def _persist_uncompressed_snapshot(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        topic: str,
+        messages: list[BaseMessage],
+    ) -> None:
+        self.store.upsert_session(session_id, user_id, topic)
+
+        backbone_rows: list[tuple[str, str, bool, int]] = []
+        raw_rows: list[tuple[str, str, int]] = []
+        for message in messages:
+            if not isinstance(message, (HumanMessage, AIMessage)):
+                continue
+            role = "human" if isinstance(message, HumanMessage) else "assistant"
+            content = message.content if isinstance(message.content, str) else json.dumps(message.content, ensure_ascii=False)
+            token_estimate = max(1, len(content) // 4)
+            backbone_rows.append((role, content, True, token_estimate))
+            raw_rows.append((role, content, token_estimate))
+
+        if backbone_rows:
+            self.store.save_messages(session_id, backbone_rows)
+        if raw_rows:
+            self.store.save_raw_messages(session_id, raw_rows)
+
+        serialized = json.dumps([message_to_dict(m) for m in messages], ensure_ascii=False)
+        token_count = sum(max(1, len(str(getattr(m, "content", ""))) // 4) for m in messages)
+        self.store.save_working_context_snapshot(
+            session_id=session_id,
+            serialized_messages=serialized,
+            token_count=token_count,
+            is_compressed=False,
+        )
 
     @staticmethod
     def extract_memory_summary(messages: list[BaseMessage]) -> str:

@@ -269,3 +269,30 @@ def test_expression_condition_with_missing_field_falls_back():
     runtime = WorkflowRuntime(spec, agent_runner=None)
     next_node = runtime.next_node("start", {"artifacts": {}})
     assert next_node == "fallback"
+
+
+def test_dict_condition_missing_expected_value_falls_back():
+    spec = WorkflowSpec.model_validate(
+        {
+            "id": "dict_missing_expected",
+            "name": "Dict Missing Expected",
+            "entry_node": "start",
+            "nodes": {
+                "start": {"type": "agent", "agent_id": "planner"},
+                "good": {"type": "terminal"},
+                "fallback": {"type": "terminal"},
+            },
+            "edges": [
+                {
+                    "from": "start",
+                    "to": "good",
+                    "condition": {"field": "artifacts.score", "op": "gte"},
+                },
+                {"from": "start", "to": "fallback"},
+            ],
+            "limits": {},
+        }
+    )
+    runtime = WorkflowRuntime(spec, agent_runner=None)
+    next_node = runtime.next_node("start", {"artifacts": {"score": 0.9}})
+    assert next_node == "fallback"

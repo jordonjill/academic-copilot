@@ -108,6 +108,26 @@ def test_runtime_engine_supervisor_direct_reply(monkeypatch, tmp_path):
     assert result["message"] == "direct ok"
 
 
+def test_runtime_engine_logs_warning_when_supervisor_returns_empty(monkeypatch, tmp_path, caplog):
+    engine = RuntimeEngine(registry=_registry(tmp_path))
+    monkeypatch.setattr(engine, "_resolve_llm", lambda spec: object())
+
+    def _fake_build(spec, llm, tool_resolver):
+        del llm, tool_resolver
+        if spec.id == "supervisor":
+            return _FakeRunnable(lambda payload: "")
+        raise AssertionError(f"Unexpected agent execution: {spec.id}")
+
+    monkeypatch.setattr("src.application.runtime.runtime_engine.build_agent_from_spec", _fake_build)
+
+    with caplog.at_level("WARNING"):
+        result = engine.run_turn(_state())
+
+    assert result["success"] is True
+    assert result["message"] == "No output produced."
+    assert any("supervisor.empty_decision_output" in record.message for record in caplog.records)
+
+
 def test_runtime_engine_supervisor_runs_subagent_then_replies(monkeypatch, tmp_path):
     engine = RuntimeEngine(registry=_registry(tmp_path))
     monkeypatch.setattr(engine, "_resolve_llm", lambda spec: object())

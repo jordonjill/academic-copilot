@@ -76,7 +76,17 @@ class WorkflowRuntime:
                 )
                 return False
             op = str(condition.get("op") or "eq").strip().lower()
+            has_expected = ("value" in condition) or ("equals" in condition)
             expected = condition.get("value", condition.get("equals"))
+            if op not in {"exists", "truthy", "falsy"} and not has_expected:
+                logger.warning(
+                    "workflow.condition.missing_expected workflow_id=%s field=%s op=%s condition=%s",
+                    self.spec.id,
+                    field,
+                    op,
+                    condition,
+                )
+                return False
             return self._evaluate_condition(value, expected, op)
 
         if isinstance(condition, str):

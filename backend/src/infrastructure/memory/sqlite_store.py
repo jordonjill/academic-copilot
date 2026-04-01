@@ -14,12 +14,14 @@ import hashlib
 import sqlite3
 import os
 import threading
+import logging
 from datetime import UTC, datetime
 from typing import List, Tuple
 from src.infrastructure.config.config import CONVERSATION_DB
 
 
 _THREAD_LOCAL = threading.local()
+logger = logging.getLogger(__name__)
 
 
 def _db_path() -> str:
@@ -37,8 +39,8 @@ def _get_conn() -> sqlite3.Connection:
     if isinstance(conn, sqlite3.Connection):
         try:
             conn.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed to close stale SQLite connection for path %s: %s", current_path, exc)
 
     parent = os.path.dirname(path)
     if parent:

@@ -102,7 +102,7 @@ class RuntimeEngine:
             self._run_chitchat(state)
             return
 
-        max_steps = int(os.getenv("SUPERVISOR_MAX_STEPS", "8"))
+        max_steps = max(1, _read_int_env("SUPERVISOR_MAX_STEPS", 8))
         max_subagent_calls_per_agent = _read_int_env(_SUPERVISOR_MAX_SUBAGENT_CALLS_ENV, 2)
         max_subagent_calls_per_agent = max(0, max_subagent_calls_per_agent)
         max_wall_seconds = read_env_float("SUPERVISOR_MAX_WALL_TIME_SECONDS", 180.0)
@@ -217,6 +217,13 @@ class RuntimeEngine:
             )
         )
         text = self._coerce_text(raw)
+        if not text.strip():
+            logger.warning(
+                "supervisor.empty_decision_output agent_id=%s step_count=%s workflow_id=%s",
+                supervisor_spec.id,
+                state["runtime"].get("step_count", 0),
+                requested_workflow_id,
+            )
         parsed = self._try_parse_json(text)
         state["io"]["last_model_output"] = text
         if isinstance(parsed, dict):
@@ -571,7 +578,7 @@ class RuntimeEngine:
                         self._llm_cache_hits += 1
                         self._llm_cache.move_to_end(key)
                         return existing
-                    if len(self._llm_cache) >= self._llm_cache_max_size:
+                    while len(self._llm_cache) >= self._llm_cache_max_size:
                         self._llm_cache.popitem(last=False)
                     self._llm_cache[key] = llm
                     self._llm_cache.move_to_end(key)

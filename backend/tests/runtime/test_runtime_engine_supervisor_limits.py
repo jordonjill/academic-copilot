@@ -124,3 +124,34 @@ def test_supervisor_subagent_call_cap_per_agent(monkeypatch, tmp_path):
         "call limit reached (2)" in str(message.content)
         for message in state["context"]["messages"]
     )
+
+
+def test_supervisor_max_steps_env_invalid_falls_back(monkeypatch, tmp_path):
+    registry = ConfigRegistry(config_root=tmp_path)
+    registry.agents = {
+        "supervisor": AgentSpec.model_validate(
+            {
+                "id": "supervisor",
+                "name": "Supervisor",
+                "mode": "chain",
+                "system_prompt": "supervisor",
+                "tools": [],
+                "llm": {"name": "openai_default"},
+            }
+        ),
+    }
+    registry.workflows = {}
+
+    engine = RuntimeEngine(registry=registry)
+    monkeypatch.setattr(engine, "_resolve_llm", lambda spec: object())
+    monkeypatch.setattr(
+        "src.application.runtime.runtime_engine.build_agent_from_spec",
+        lambda spec, llm, tool_resolver: _FakeRunnable(
+            lambda payload: json.dumps({"action": "direct_reply", "message": "ok", "done": True})
+        ),
+    )
+    monkeypatch.setenv("SUPERVISOR_MAX_STEPS", "8.0")
+
+    result = engine.run_turn(_state())
+    assert result["success"] is True
+    assert result["message"] == "ok"
