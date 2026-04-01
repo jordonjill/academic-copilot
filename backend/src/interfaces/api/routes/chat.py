@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -66,5 +66,5 @@ async def chat(
         message=message,
         data=data,
         session_id=session_id,
-        timestamp=datetime.now().isoformat(),
+        timestamp=datetime.now(UTC).isoformat(),
     )

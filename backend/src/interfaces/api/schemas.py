@@ -1,6 +1,6 @@
 """API 请求/响应 Pydantic 模型。"""
 from typing import Any, Dict, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ChatRequest(BaseModel):
@@ -10,6 +10,13 @@ class ChatRequest(BaseModel):
     workflow_id: Optional[str] = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
 
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator("user_id")
+    @classmethod
+    def _validate_user_id_path_component(cls, value: str) -> str:
+        if value in {".", ".."}:
+            raise ValueError("user_id cannot be '.' or '..'")
+        return value
 
 
 class ChatResponseData(BaseModel):

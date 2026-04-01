@@ -12,6 +12,7 @@ Academic Copilot 服务层。
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -271,12 +272,18 @@ class AcademicCopilotApp:
         try:
             loop = asyncio.get_running_loop()
             llm = await asyncio.to_thread(self.runtime.resolve_default_llm)
+
+            supports_event_loop = False
+            try:
+                params = inspect.signature(self.memory.persist_turn).parameters
+                supports_event_loop = "event_loop" in params
+            except (TypeError, ValueError):
+                supports_event_loop = False
+
             def _persist_turn() -> dict[str, Any]:
-                try:
+                if supports_event_loop:
                     return self.memory.persist_turn(state, llm, event_loop=loop)
-                except TypeError:
-                    # Compatibility for test doubles or legacy adapters.
-                    return self.memory.persist_turn(state, llm)
+                return self.memory.persist_turn(state, llm)
 
             await asyncio.to_thread(_persist_turn)
         except Exception as exc:

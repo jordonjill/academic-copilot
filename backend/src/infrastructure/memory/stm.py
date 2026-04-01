@@ -82,10 +82,14 @@ async def drain_ltm_tasks(timeout_seconds: float = 5.0) -> dict[str, Any]:
     loop = asyncio.get_running_loop()
     pending_awaitables: list[asyncio.Future[Any]] = []
     for pending_item in pending:
+        if pending_item.done():
+            continue
         if isinstance(pending_item, asyncio.Future):
             pending_awaitables.append(pending_item)
         else:
             pending_awaitables.append(asyncio.wrap_future(pending_item, loop=loop))
+    if not pending_awaitables:
+        return report
 
     try:
         await asyncio.wait_for(
@@ -257,6 +261,8 @@ def stm_compression_node(
 
                     target_loop = event_loop
                     if target_loop is None:
+                        # Fallback keeps direct/test-only callers working even without
+                        # service layer passing an event loop explicitly.
                         try:
                             target_loop = asyncio.get_running_loop()
                         except RuntimeError:

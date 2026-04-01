@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
@@ -31,6 +32,7 @@ from src.infrastructure.config.prompt import LTM_EXTRACTION_PROMPT
 _MAX_PAST_TOPICS = 20  # past_topics FIFO 滚动上限
 logger = logging.getLogger(__name__)
 _USERS_ROOT = Path(USERS_DIR).expanduser().resolve()
+_USER_ID_PATTERN = re.compile(r"^(?!\.{1,2}$)[A-Za-z0-9_@.-]{1,128}$")
 
 
 def _ltm_max_workers() -> int:
@@ -49,7 +51,8 @@ _LTM_EXECUTOR = ThreadPoolExecutor(
 
 
 def _shutdown_ltm_executor() -> None:
-    _LTM_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+    # Best effort to preserve final LTM writes during normal process exit.
+    _LTM_EXECUTOR.shutdown(wait=True, cancel_futures=False)
 
 
 atexit.register(_shutdown_ltm_executor)
@@ -66,14 +69,13 @@ def _build_backbone_text(backbone: List[BaseMessage]) -> str:
 
 def _safe_user_memory_path(user_id: str) -> Path:
     normalized_user_id = (user_id or "").strip()
-    if not normalized_user_id:
-        raise ValueError("user_id must not be empty")
-    if Path(normalized_user_id).name != normalized_user_id:
+    if not _USER_ID_PATTERN.fullmatch(normalized_user_id):
         raise ValueError(f"Invalid user_id path component: {user_id}")
-    if normalized_user_id in {".", ".."}:
-        raise ValueError(f"Invalid user_id path component: {user_id}")
-    candidate = (_USERS_ROOT / normalized_user_id / "memory.md").resolve()
-    candidate.relative_to(_USERS_ROOT)
+    try:
+        candidate = (_USERS_ROOT / normalized_user_id / "memory.md").resolve()
+        candidate.relative_to(_USERS_ROOT)
+    except ValueError as exc:
+        raise ValueError(f"user_id '{user_id}' resolves outside user root") from exc
     return candidate
 
 
@@ -191,12 +193,15 @@ async def extract_and_update_ltm(
         try:
             new_facts: Dict[str, List[str]] = json.loads(raw_json)
         except json.JSONDecodeError:
-            import re
             m = re.search(r'\{.*\}', raw_json, re.DOTALL)
             if not m:
                 logger.warning("[LTM] JSON parse failed: %s", raw_json[:200])
                 return
-            new_facts = json.loads(m.group())
+            try:
+                new_facts = json.loads(m.group())
+            except json.JSONDecodeError:
+                logger.warning("[LTM] JSON parse failed after regex extraction: %s", raw_json[:200])
+                return
 
         # 合并 + 写入 memory.md
         existing = _load_existing_profile(user_id)

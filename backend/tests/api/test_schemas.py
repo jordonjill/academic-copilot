@@ -11,6 +11,11 @@ def test_chat_request_rejects_user_id_path_traversal():
         ChatRequest(message="hello", user_id="../../etc/passwd")
 
 
+def test_chat_request_rejects_user_id_dotdot():
+    with pytest.raises(ValidationError):
+        ChatRequest(message="hello", user_id="..")
+
+
 def test_chat_request_rejects_session_id_with_slash():
     with pytest.raises(ValidationError):
         ChatRequest(message="hello", session_id="a/b")

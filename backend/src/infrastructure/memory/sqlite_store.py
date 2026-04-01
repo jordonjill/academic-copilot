@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 _DB_INITIALIZED = threading.Event()
 _DB_INIT_LOCK = threading.Lock()
 _DB_INITIALIZED_PATH: str | None = None
+_VALID_SESSION_STATUSES = frozenset({"active", "closed", "expired"})
 
 
 def _db_path() -> str:
@@ -276,6 +277,8 @@ class SQLiteStore:
             ).fetchone()
 
     def update_session_status(self, session_id: str, status: str) -> None:
+        if status not in _VALID_SESSION_STATUSES:
+            raise ValueError(f"Invalid session status: {status!r}")
         with _get_conn() as conn:
             conn.execute(
                 "UPDATE sessions SET status=? WHERE session_id=?",
