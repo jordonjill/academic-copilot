@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import pytest
 
@@ -257,3 +258,134 @@ def test_runtime_engine_workflow_loop_counts_entry_revisit(monkeypatch, tmp_path
     with pytest.raises(RuntimeError, match="max_loops exceeded"):
         engine.run_turn(state, requested_workflow_id="loop_wf")
     assert state["runtime"]["loop_count"] == 1
+
+
+def test_apply_agent_output_recovers_when_shared_is_non_dict(tmp_path):
+    engine = RuntimeEngine(registry=_registry(tmp_path))
+    state = _state()
+    state["artifacts"]["shared"] = None
+
+    engine._apply_agent_output(
+        state=state,
+        node_name="researcher_node",
+        agent_id="researcher",
+        text="hello",
+        parsed={"artifacts": {"shared": None}},
+    )
+
+    assert isinstance(state["artifacts"]["shared"], dict)
+    assert state["artifacts"]["shared"]["researcher"]["output_text"] == "hello"
+
+
+def test_requested_workflow_skips_finalize_when_supervisor_not_chain(monkeypatch, tmp_path):
+    registry = ConfigRegistry(config_root=tmp_path)
+    registry.agents = {
+        "supervisor": AgentSpec.model_validate(
+            {
+                "id": "supervisor",
+                "name": "Supervisor",
+                "mode": "react",
+                "system_prompt": "supervisor",
+                "tools": [],
+                "llm": {"name": "openai_default"},
+            }
+        ),
+        "reporter": AgentSpec.model_validate(
+            {
+                "id": "reporter",
+                "name": "Reporter",
+                "mode": "chain",
+                "system_prompt": "reporter",
+                "tools": [],
+                "llm": {"name": "openai_default"},
+            }
+        ),
+    }
+    registry.workflows = {
+        "wf1": WorkflowSpec.model_validate(
+            {
+                "id": "wf1",
+                "name": "wf1",
+                "entry_node": "reporter_node",
+                "nodes": {
+                    "reporter_node": {"type": "agent", "agent_id": "reporter"},
+                    "end": {"type": "terminal"},
+                },
+                "edges": [{"from": "reporter_node", "to": "end"}],
+                "limits": {"max_steps": 5, "max_loops": 2},
+            }
+        )
+    }
+    engine = RuntimeEngine(registry=registry)
+    monkeypatch.setattr(engine, "_resolve_llm", lambda spec: object())
+
+    def _fake_build(spec, llm, tool_resolver):
+        del llm, tool_resolver
+        if spec.id == "reporter":
+            return _FakeRunnable(lambda payload: json.dumps({"final_text": "reporter output"}))
+        raise AssertionError(f"Unexpected finalize execution for spec: {spec.id}")
+
+    monkeypatch.setattr("src.application.runtime.runtime_engine.build_agent_from_spec", _fake_build)
+
+    result = engine.run_turn(_state(), requested_workflow_id="wf1")
+    assert result["success"] is True
+    assert result["message"] == "reporter output"
+
+
+def test_run_turn_async_awaits_async_step_callback(monkeypatch, tmp_path):
+    registry = ConfigRegistry(config_root=tmp_path)
+    registry.agents = {
+        "supervisor": AgentSpec.model_validate(
+            {
+                "id": "supervisor",
+                "name": "Supervisor",
+                "mode": "react",
+                "system_prompt": "supervisor",
+                "tools": [],
+                "llm": {"name": "openai_default"},
+            }
+        ),
+        "reporter": AgentSpec.model_validate(
+            {
+                "id": "reporter",
+                "name": "Reporter",
+                "mode": "chain",
+                "system_prompt": "reporter",
+                "tools": [],
+                "llm": {"name": "openai_default"},
+            }
+        ),
+    }
+    registry.workflows = {
+        "wf1": WorkflowSpec.model_validate(
+            {
+                "id": "wf1",
+                "name": "wf1",
+                "entry_node": "reporter_node",
+                "nodes": {
+                    "reporter_node": {"type": "agent", "agent_id": "reporter"},
+                    "end": {"type": "terminal"},
+                },
+                "edges": [{"from": "reporter_node", "to": "end"}],
+                "limits": {"max_steps": 5, "max_loops": 2},
+            }
+        )
+    }
+    engine = RuntimeEngine(registry=registry)
+    monkeypatch.setattr(engine, "_resolve_llm", lambda spec: object())
+    monkeypatch.setattr(
+        "src.application.runtime.runtime_engine.build_agent_from_spec",
+        lambda spec, llm, tool_resolver: _FakeRunnable(
+            lambda payload: json.dumps({"final_text": "reporter output"})
+        ),
+    )
+
+    callback_calls = {"count": 0}
+
+    async def _step_callback(payload):
+        del payload
+        callback_calls["count"] += 1
+
+    result = asyncio.run(engine.run_turn_async(_state(), requested_workflow_id="wf1", step_callback=_step_callback))
+    assert result["success"] is True
+    assert callback_calls["count"] == 1

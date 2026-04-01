@@ -271,7 +271,7 @@ class AcademicCopilotApp:
 
         try:
             loop = asyncio.get_running_loop()
-            llm = await asyncio.to_thread(self.runtime.resolve_default_llm)
+            llm = self.runtime.resolve_default_llm()
 
             supports_event_loop = False
             try:

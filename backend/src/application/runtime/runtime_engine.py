@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -27,7 +28,7 @@ from src.infrastructure.tools.registry import get_tool
 CHITCHAT_SYSTEM = """You are Academic Copilot, an assistant for academic research tasks.
 Respond concisely and in the same language as the user."""
 
-StepCallback = Callable[[Dict[str, Any]], None]
+StepCallback = Callable[[Dict[str, Any]], Any]
 _SUPERVISOR_AGENT_ENV = "SUPERVISOR_AGENT_ID"
 _DEFAULT_SUPERVISOR_AGENT_ID = "supervisor"
 _SUPERVISOR_MAX_SUBAGENT_CALLS_ENV = "SUPERVISOR_MAX_SUBAGENT_CALLS_PER_AGENT"
@@ -189,6 +190,15 @@ class RuntimeEngine:
                                 )
                             )
                         )
+                        if decision.get("done"):
+                            final_text = decision.get("final_text")
+                            if not isinstance(final_text, str) or not final_text.strip():
+                                final_text = decision.get("message")
+                            if isinstance(final_text, str) and final_text.strip():
+                                state["output"]["final_text"] = final_text
+                                state["io"]["last_model_output"] = final_text
+                                state["context"]["messages"].append(AIMessage(content=final_text))
+                                return
                         continue
 
                     instruction = decision.get("instruction")
@@ -307,6 +317,15 @@ class RuntimeEngine:
                                 )
                             )
                         )
+                        if decision.get("done"):
+                            final_text = decision.get("final_text")
+                            if not isinstance(final_text, str) or not final_text.strip():
+                                final_text = decision.get("message")
+                            if isinstance(final_text, str) and final_text.strip():
+                                state["output"]["final_text"] = final_text
+                                state["io"]["last_model_output"] = final_text
+                                state["context"]["messages"].append(AIMessage(content=final_text))
+                                return
                         continue
 
                     instruction = decision.get("instruction")
@@ -318,18 +337,18 @@ class RuntimeEngine:
                     await self._execute_agent_async(state, agent_id, agent_id)
                     subagent_call_counts[agent_id] = calls_used + 1
                     state["runtime"]["step_count"] += 1
-                    if step_callback is not None:
-                        step_callback(
-                            {
-                                "node_name": agent_id,
-                                "step_number": state["runtime"]["step_count"],
-                                "agent_id": agent_id,
-                                "next_node": None,
-                                "supervisor_reason": "supervisor selected direct subagent execution",
-                                "last_model_output": state["io"].get("last_model_output"),
-                                "tool_outputs": list(state["io"].get("last_tool_outputs", [])),
-                            }
-                        )
+                    await self._emit_step_callback_async(
+                        step_callback,
+                        {
+                            "node_name": agent_id,
+                            "step_number": state["runtime"]["step_count"],
+                            "agent_id": agent_id,
+                            "next_node": None,
+                            "supervisor_reason": "supervisor selected direct subagent execution",
+                            "last_model_output": state["io"].get("last_model_output"),
+                            "tool_outputs": list(state["io"].get("last_tool_outputs", [])),
+                        },
+                    )
                     if decision.get("done") and state["output"].get("final_text"):
                         return
                     continue
@@ -478,6 +497,8 @@ class RuntimeEngine:
         supervisor_spec = self._resolve_supervisor_spec()
         if supervisor_spec is None:
             return
+        if supervisor_spec.mode != "chain":
+            return
 
         llm = self._resolve_llm(supervisor_spec)
         runnable = build_agent_from_spec(supervisor_spec, llm, self._resolve_tool)
@@ -510,6 +531,8 @@ class RuntimeEngine:
     ) -> None:
         supervisor_spec = self._resolve_supervisor_spec()
         if supervisor_spec is None:
+            return
+        if supervisor_spec.mode != "chain":
             return
 
         llm = self._resolve_llm(supervisor_spec)
@@ -673,18 +696,18 @@ class RuntimeEngine:
             runtime.assert_transition_allowed(current_node, next_node)
             state["runtime"]["current_node"] = next_node
 
-            if step_callback is not None:
-                step_callback(
-                    {
-                        "node_name": current_node,
-                        "step_number": state["runtime"]["step_count"],
-                        "agent_id": agent_id,
-                        "next_node": next_node,
-                        "supervisor_reason": "workflow auto transition",
-                        "last_model_output": state["io"].get("last_model_output"),
-                        "tool_outputs": list(state["io"].get("last_tool_outputs", [])),
-                    }
-                )
+            await self._emit_step_callback_async(
+                step_callback,
+                {
+                    "node_name": current_node,
+                    "step_number": state["runtime"]["step_count"],
+                    "agent_id": agent_id,
+                    "next_node": next_node,
+                    "supervisor_reason": "workflow auto transition",
+                    "last_model_output": state["io"].get("last_model_output"),
+                    "tool_outputs": list(state["io"].get("last_tool_outputs", [])),
+                },
+            )
 
             if visit_counts.get(next_node, 0) > 0:
                 state["runtime"]["loop_count"] += 1
@@ -791,9 +814,23 @@ class RuntimeEngine:
         text: str,
         parsed: Optional[Dict[str, Any]],
     ) -> None:
-        shared = state["artifacts"].setdefault("shared", {})
-        if isinstance(shared, dict):
-            shared.pop(agent_id, None)
+        artifacts_state = state.get("artifacts")
+        if not isinstance(artifacts_state, dict):
+            artifacts_state = {}
+            state["artifacts"] = artifacts_state
+
+        shared = artifacts_state.get("shared")
+        if not isinstance(shared, dict):
+            if shared is not None:
+                logger.warning(
+                    "runtime.artifacts.shared_reset_invalid_type agent_id=%s type=%s",
+                    agent_id,
+                    type(shared).__name__,
+                )
+            shared = {}
+            artifacts_state["shared"] = shared
+
+        shared.pop(agent_id, None)
         shared[agent_id] = {
             "node": node_name,
             "output_text": text,
@@ -804,7 +841,22 @@ class RuntimeEngine:
         if parsed and isinstance(parsed, dict):
             artifacts_patch = parsed.get("artifacts")
             if isinstance(artifacts_patch, dict):
-                state["artifacts"].update(artifacts_patch)
+                patch = dict(artifacts_patch)
+                shared_patch = patch.pop("shared", None) if "shared" in patch or "shared" in artifacts_patch else None
+                artifacts_state.update(patch)
+                if "shared" in artifacts_patch:
+                    if isinstance(shared_patch, dict):
+                        target_shared = artifacts_state.get("shared")
+                        if not isinstance(target_shared, dict):
+                            target_shared = {}
+                            artifacts_state["shared"] = target_shared
+                        target_shared.update(shared_patch)
+                    else:
+                        logger.warning(
+                            "runtime.artifacts.shared_patch_ignored agent_id=%s type=%s",
+                            agent_id,
+                            type(shared_patch).__name__,
+                        )
 
             final_text = parsed.get("final_text")
             if isinstance(final_text, str) and final_text.strip():
@@ -1014,6 +1066,17 @@ class RuntimeEngine:
         if tool is None:
             raise ValueError(f"Tool unavailable: {tool_id}")
         return tool
+
+    async def _emit_step_callback_async(
+        self,
+        step_callback: Optional[StepCallback],
+        payload: Dict[str, Any],
+    ) -> None:
+        if step_callback is None:
+            return
+        result = step_callback(payload)
+        if inspect.isawaitable(result):
+            await result
 
     async def _invoke_async(self, runnable: Any, payload: Any) -> Any:
         ainvoke = getattr(runnable, "ainvoke", None)
