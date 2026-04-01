@@ -39,6 +39,7 @@ class RuntimeEngine:
     def __init__(self, registry: ConfigRegistry) -> None:
         self.registry = registry
         self._llm_cache: OrderedDict[tuple[str, str, str, str, str], BaseLanguageModel] = OrderedDict()
+        self._llm_cache_inflight: dict[tuple[str, str, str, str, str], threading.Event] = {}
         self._llm_cache_max_size = max(1, _read_int_env("LLM_CACHE_MAX_SIZE", 128))
         self._chain_context_messages_window = max(1, _read_int_env("CHAIN_CONTEXT_MESSAGES_WINDOW", 12))
         self._llm_cache_lock = threading.Lock()
@@ -207,27 +208,13 @@ class RuntimeEngine:
     ) -> Dict[str, Any]:
         llm = self._resolve_llm(supervisor_spec)
         runnable = build_agent_from_spec(supervisor_spec, llm, self._resolve_tool)
-        available_agents = sorted(
-            [
-                agent_id
-                for agent_id in self.registry.agents.keys()
-                if agent_id != supervisor_spec.id and not agent_id.endswith("_router")
-            ]
-        )
-        available_workflows = sorted(self.registry.workflows.keys())
         raw = runnable.invoke(
-            {
-                "user_text": state["input"].get("user_text", ""),
-                "messages": self._messages_to_text(state["context"].get("messages", [])),
-                "artifacts": json.dumps(state.get("artifacts", {}), ensure_ascii=False, default=str),
-                "last_model_output": state["io"].get("last_model_output", ""),
-                "last_tool_outputs": json.dumps(state["io"].get("last_tool_outputs", []), ensure_ascii=False, default=str),
-                "available_agents": json.dumps(available_agents, ensure_ascii=False),
-                "available_workflows": json.dumps(available_workflows, ensure_ascii=False),
-                "requested_workflow_id": requested_workflow_id or "",
-                "step_count": state["runtime"].get("step_count", 0),
-                "loop_count": state["runtime"].get("loop_count", 0),
-            }
+            self._build_supervisor_payload(
+                state=state,
+                supervisor_spec=supervisor_spec,
+                requested_workflow_id=requested_workflow_id,
+                workflow_completed=False,
+            )
         )
         text = self._coerce_text(raw)
         parsed = self._try_parse_json(text)
@@ -307,15 +294,12 @@ class RuntimeEngine:
         llm = self._resolve_llm(supervisor_spec)
         runnable = build_agent_from_spec(supervisor_spec, llm, self._resolve_tool)
         raw = runnable.invoke(
-            {
-                "user_text": state["input"].get("user_text", ""),
-                "messages": self._messages_to_text(state["context"].get("messages", [])),
-                "artifacts": json.dumps(state.get("artifacts", {}), ensure_ascii=False, default=str),
-                "last_model_output": state["io"].get("last_model_output", ""),
-                "last_tool_outputs": json.dumps(state["io"].get("last_tool_outputs", []), ensure_ascii=False, default=str),
-                "requested_workflow_id": requested_workflow_id or "",
-                "workflow_completed": True,
-            }
+            self._build_supervisor_payload(
+                state=state,
+                supervisor_spec=supervisor_spec,
+                requested_workflow_id=requested_workflow_id,
+                workflow_completed=True,
+            )
         )
         text = self._coerce_text(raw)
         parsed = self._try_parse_json(text)
@@ -343,7 +327,7 @@ class RuntimeEngine:
         runtime = WorkflowRuntime(spec, agent_runner=None)
 
         current_node = spec.entry_node
-        visit_counts: dict[str, int] = {}
+        visit_counts: dict[str, int] = {current_node: 1}
         max_wall_seconds = read_env_float("WORKFLOW_MAX_WALL_TIME_SECONDS", 300.0)
         started = perf_counter()
 
@@ -371,8 +355,9 @@ class RuntimeEngine:
 
             node_type = node_spec.get("type")
             if node_type == "terminal":
-                if not state["output"].get("final_text"):
-                    state["output"]["final_text"] = state["io"].get("last_model_output")
+                fallback = self._best_available_final_text(state)
+                if fallback:
+                    state["output"]["final_text"] = fallback
                 break
 
             if node_type != "agent":
@@ -459,6 +444,8 @@ class RuntimeEngine:
         parsed: Optional[Dict[str, Any]],
     ) -> None:
         shared = state["artifacts"].setdefault("shared", {})
+        if isinstance(shared, dict):
+            shared.pop(agent_id, None)
         shared[agent_id] = {
             "node": node_name,
             "output_text": text,
@@ -543,14 +530,6 @@ class RuntimeEngine:
         cache_timeout = f"{llm_timeout_seconds:.3f}"
 
         key = (profile_name, model, base_url, cache_temperature, cache_timeout)
-        with self._llm_cache_lock:
-            cached = self._llm_cache.get(key)
-            if cached is not None:
-                self._llm_cache_hits += 1
-                self._llm_cache.move_to_end(key)
-                return cached
-            self._llm_cache_misses += 1
-
         kwargs: dict[str, Any] = {
             "model": model,
             "temperature": temperature,
@@ -560,18 +539,105 @@ class RuntimeEngine:
             kwargs["base_url"] = base_url
         if api_key:
             kwargs["api_key"] = api_key
-        llm = ChatOpenAI(**kwargs)
 
-        with self._llm_cache_lock:
-            existing = self._llm_cache.get(key)
-            if existing is not None:
-                self._llm_cache_hits += 1
-                self._llm_cache.move_to_end(key)
-                return existing
-            if len(self._llm_cache) >= self._llm_cache_max_size:
-                self._llm_cache.popitem(last=False)
-            self._llm_cache[key] = llm
-        return llm
+        while True:
+            create_llm = False
+            wait_event: threading.Event | None = None
+            with self._llm_cache_lock:
+                cached = self._llm_cache.get(key)
+                if cached is not None:
+                    self._llm_cache_hits += 1
+                    self._llm_cache.move_to_end(key)
+                    return cached
+
+                inflight = self._llm_cache_inflight.get(key)
+                if inflight is not None:
+                    wait_event = inflight
+                else:
+                    self._llm_cache_misses += 1
+                    wait_event = threading.Event()
+                    self._llm_cache_inflight[key] = wait_event
+                    create_llm = True
+
+            if not create_llm:
+                wait_event.wait()
+                continue
+
+            try:
+                llm = ChatOpenAI(**kwargs)
+                with self._llm_cache_lock:
+                    existing = self._llm_cache.get(key)
+                    if existing is not None:
+                        self._llm_cache_hits += 1
+                        self._llm_cache.move_to_end(key)
+                        return existing
+                    if len(self._llm_cache) >= self._llm_cache_max_size:
+                        self._llm_cache.popitem(last=False)
+                    self._llm_cache[key] = llm
+                    self._llm_cache.move_to_end(key)
+                    return llm
+            finally:
+                with self._llm_cache_lock:
+                    inflight_done = self._llm_cache_inflight.pop(key, None)
+                    if inflight_done is not None:
+                        inflight_done.set()
+
+    def _available_agents(self, supervisor_spec: AgentSpec) -> list[str]:
+        return sorted(
+            [
+                agent_id
+                for agent_id in self.registry.agents.keys()
+                if agent_id != supervisor_spec.id and not agent_id.endswith("_router")
+            ]
+        )
+
+    def _available_workflows(self) -> list[str]:
+        return sorted(self.registry.workflows.keys())
+
+    def _build_supervisor_payload(
+        self,
+        *,
+        state: RuntimeState,
+        supervisor_spec: AgentSpec,
+        requested_workflow_id: Optional[str],
+        workflow_completed: bool,
+    ) -> Dict[str, Any]:
+        available_agents = self._available_agents(supervisor_spec)
+        available_workflows = self._available_workflows()
+        return {
+            "user_text": state["input"].get("user_text", ""),
+            "messages": self._messages_to_text(state["context"].get("messages", [])),
+            "artifacts": json.dumps(state.get("artifacts", {}), ensure_ascii=False, default=str),
+            "last_model_output": state["io"].get("last_model_output", ""),
+            "last_tool_outputs": json.dumps(state["io"].get("last_tool_outputs", []), ensure_ascii=False, default=str),
+            "available_agents": json.dumps(available_agents, ensure_ascii=False),
+            "available_workflows": json.dumps(available_workflows, ensure_ascii=False),
+            "requested_workflow_id": requested_workflow_id or "",
+            "step_count": state["runtime"].get("step_count", 0),
+            "loop_count": state["runtime"].get("loop_count", 0),
+            "workflow_completed": workflow_completed,
+        }
+
+    def _best_available_final_text(self, state: RuntimeState) -> Optional[str]:
+        final_text = state["output"].get("final_text")
+        if isinstance(final_text, str) and final_text.strip():
+            return final_text
+
+        shared = state.get("artifacts", {}).get("shared", {})
+        if isinstance(shared, dict):
+            reporter = shared.get("reporter")
+            if isinstance(reporter, dict):
+                reporter_text = reporter.get("output_text")
+                if isinstance(reporter_text, str) and reporter_text.strip():
+                    return reporter_text
+
+            for item in reversed(list(shared.values())):
+                if not isinstance(item, dict):
+                    continue
+                output_text = item.get("output_text")
+                if isinstance(output_text, str) and output_text.strip():
+                    return output_text
+        return None
 
     def _resolve_supervisor_spec(self) -> Optional[AgentSpec]:
         preferred = os.getenv(_SUPERVISOR_AGENT_ENV, _DEFAULT_SUPERVISOR_AGENT_ID)
@@ -634,11 +700,11 @@ class RuntimeEngine:
                 return self._coerce_text(message)
         return ""
 
-    def _extract_tool_outputs(self, messages: list[BaseMessage]) -> list[str]:
-        outputs: list[str] = []
+    def _extract_tool_outputs(self, messages: list[BaseMessage]) -> list[Any]:
+        outputs: list[Any] = []
         for message in messages:
             if isinstance(message, ToolMessage):
-                outputs.append(self._coerce_text(message))
+                outputs.append(message.content)
         return outputs
 
     def _messages_to_text(self, messages: list[BaseMessage]) -> str:
@@ -712,7 +778,11 @@ class RuntimeEngine:
                 result["message"] = final_structured["message"]
             return result
 
-        final_text = state["output"].get("final_text") or state["io"].get("last_model_output")
+        final_text = (
+            state["output"].get("final_text")
+            or self._best_available_final_text(state)
+            or state["io"].get("last_model_output")
+        )
         return {
             "success": bool(final_text),
             "type": "chat",

@@ -26,11 +26,14 @@ def create_subagent(
     *,
     prompt: str | BasePromptTemplate,
     tools: Optional[List[BaseTool]] = None,
+    output_schema: Any = None,
     name: str = "agent",
 ) -> Runnable | Any:
     if mode == AgentMode.CHAIN:
         if isinstance(prompt, str):
             prompt = PromptTemplate.from_template(prompt)
+        if output_schema is not None and hasattr(llm, "with_structured_output"):
+            llm = llm.with_structured_output(output_schema)
         return prompt | llm
 
     if mode == AgentMode.REACT:
@@ -73,5 +76,6 @@ def build_agent_from_spec(
         llm,
         prompt=spec.system_prompt,
         tools=tools,
+        output_schema=None,
         name=spec.id,
     )

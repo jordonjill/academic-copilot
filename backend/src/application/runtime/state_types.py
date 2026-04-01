@@ -27,7 +27,7 @@ class RuntimeMetaState(TypedDict):
 
 class RuntimeIOState(TypedDict):
     last_model_output: Optional[str]
-    last_tool_outputs: list[str]
+    last_tool_outputs: list[Any]
 
 
 class RuntimeArtifactsState(TypedDict):

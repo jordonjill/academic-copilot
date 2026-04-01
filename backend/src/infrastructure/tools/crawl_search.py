@@ -14,9 +14,26 @@ from langchain_tavily import TavilySearch
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-_JINA_TIMEOUT_SECONDS = 120
-_CRAWL_MAX_WORKERS = 5
 _DEFAULT_MAX_RESULTS = 10
+
+
+def _env_int(name: str, default: int, *, minimum: int = 1, maximum: int | None = None) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    if value < minimum:
+        return default
+    if maximum is not None and value > maximum:
+        return maximum
+    return value
+
+
+_JINA_TIMEOUT_SECONDS = _env_int("JINA_TIMEOUT_SECONDS", 120, minimum=5, maximum=600)
+_CRAWL_MAX_WORKERS = _env_int("WEB_CRAWL_MAX_WORKERS", 5, minimum=1, maximum=32)
 
 
 def _tool_error(code: str, message: str, *, uri: str | None = None) -> dict[str, str]:

@@ -23,7 +23,10 @@ def _resolve_output_path(output_path: str) -> Path:
     if resolved != base_dir and base_dir not in resolved.parents:
         raise ValueError("Output path must be within EXPORT_BASE_DIR.")
 
-    resolved.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ValueError(f"Cannot create export directory '{resolved.parent}': {exc!r}") from exc
     return resolved
 
 
@@ -63,5 +66,8 @@ def export_pdf(title: str, content: str, output_path: str) -> dict[str, str]:
         pdf.drawString(72, y, line)
         y -= 18
 
-    pdf.save()
+    try:
+        pdf.save()
+    except OSError as exc:
+        raise ValueError(f"Cannot write PDF file '{path}': {exc!r}") from exc
     return {"path": str(path)}

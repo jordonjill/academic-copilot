@@ -62,37 +62,41 @@ def _is_probably_text(path: Path) -> bool:
         return False
 
 
-def _read_pdf_text(path: Path, max_chars: int) -> tuple[str, bool, str | None]:
+def _read_pdf_text(path: Path, max_chars: int) -> tuple[str, bool, bool, str | None]:
     try:
         from pypdf import PdfReader
     except ImportError:
-        return "", False, "PDF support requires dependency: pypdf"
+        return "", False, False, "PDF support requires dependency: pypdf"
 
     try:
         reader = PdfReader(str(path))
         parts: list[str] = []
         used = 0
-        truncated = False
+        truncated_by_chars = False
+        has_more_pages = False
+        total_pages = len(reader.pages)
 
-        for page in reader.pages:
+        for idx, page in enumerate(reader.pages):
             text = page.extract_text() or ""
             if not text:
                 continue
             if used >= max_chars:
-                truncated = True
+                truncated_by_chars = True
+                has_more_pages = idx < total_pages
                 break
             remain = max_chars - used
             if len(text) > remain:
                 parts.append(text[:remain])
                 used += remain
-                truncated = True
+                truncated_by_chars = True
+                has_more_pages = True
                 break
             parts.append(text)
             used += len(text)
 
-        return "".join(parts), truncated, None
+        return "".join(parts), truncated_by_chars, has_more_pages, None
     except Exception as exc:
-        return "", False, f"PDF read failed: {exc!r}"
+        return "", False, False, f"PDF read failed: {exc!r}"
 
 
 @tool("filesystem")
@@ -156,13 +160,16 @@ def filesystem(
         suffix = path.suffix.lower()
 
         if suffix == _PDF_SUFFIX:
-            text, truncated, error = _read_pdf_text(path, max_chars_per_file)
+            text, truncated_by_chars, has_more_pages, error = _read_pdf_text(path, max_chars_per_file)
             if needle and needle not in rel_path.casefold() and needle not in text.casefold():
                 continue
+            truncated = truncated_by_chars or has_more_pages
             item: dict[str, Any] = {
                 "path": rel_path,
                 "chars": len(text),
                 "truncated": truncated,
+                "truncated_by_chars": truncated_by_chars,
+                "has_more_pages": has_more_pages,
                 "content": text,
             }
             if error:

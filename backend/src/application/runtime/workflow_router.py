@@ -185,7 +185,7 @@ class WorkflowRuntime:
             if isinstance(research_plan, dict):
                 step_type = research_plan.get("step_type")
                 if isinstance(step_type, str):
-                    candidates.append(step_type.lower())
+                    candidates.append(step_type.strip().lower())
 
             research_critic = artifacts.get("research_critic")
             if isinstance(research_critic, dict) and "is_valid" in research_critic:

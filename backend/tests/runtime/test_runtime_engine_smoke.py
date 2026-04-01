@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pytest
 
 from langchain_core.messages import HumanMessage
 
@@ -144,7 +145,10 @@ def test_runtime_engine_supervisor_starts_workflow(monkeypatch, tmp_path):
     supervisor_calls = {"count": 0}
     reporter_calls = {"count": 0}
 
+    supervisor_payloads: list[dict] = []
+
     def _supervisor_reply(payload):
+        supervisor_payloads.append(payload)
         supervisor_calls["count"] += 1
         if supervisor_calls["count"] == 1:
             return json.dumps({"action": "start_workflow", "target": "wf1", "done": False})
@@ -172,3 +176,64 @@ def test_runtime_engine_supervisor_starts_workflow(monkeypatch, tmp_path):
     assert reporter_calls["count"] == 1
     assert state["runtime"]["mode"] == "workflow"
     assert state["runtime"]["workflow_id"] == "wf1"
+    assert len(supervisor_payloads) == 2
+    finalize_payload = supervisor_payloads[-1]
+    assert finalize_payload["workflow_completed"] is True
+    assert "available_agents" in finalize_payload
+    assert "available_workflows" in finalize_payload
+    assert "step_count" in finalize_payload
+    assert "loop_count" in finalize_payload
+
+
+def test_runtime_engine_workflow_loop_counts_entry_revisit(monkeypatch, tmp_path):
+    registry = ConfigRegistry(config_root=tmp_path)
+    registry.agents = {
+        "supervisor": AgentSpec.model_validate(
+            {
+                "id": "supervisor",
+                "name": "Supervisor",
+                "mode": "chain",
+                "system_prompt": "supervisor",
+                "tools": [],
+                "llm": {"name": "openai_default"},
+            }
+        ),
+        "researcher": AgentSpec.model_validate(
+            {
+                "id": "researcher",
+                "name": "Researcher",
+                "mode": "chain",
+                "system_prompt": "researcher",
+                "tools": [],
+                "llm": {"name": "openai_default"},
+            }
+        ),
+    }
+    registry.workflows = {
+        "loop_wf": WorkflowSpec.model_validate(
+            {
+                "id": "loop_wf",
+                "name": "loop_wf",
+                "entry_node": "researcher_node",
+                "nodes": {"researcher_node": {"type": "agent", "agent_id": "researcher"}},
+                "edges": [{"from": "researcher_node", "to": "researcher_node"}],
+                "limits": {"max_steps": 10, "max_loops": 1},
+            }
+        )
+    }
+
+    engine = RuntimeEngine(registry=registry)
+    monkeypatch.setattr(engine, "_resolve_llm", lambda spec: object())
+
+    def _fake_build(spec, llm, tool_resolver):
+        del llm, tool_resolver
+        if spec.id == "researcher":
+            return _FakeRunnable(lambda payload: "looping")
+        raise AssertionError(f"Unexpected spec id: {spec.id}")
+
+    monkeypatch.setattr("src.application.runtime.runtime_engine.build_agent_from_spec", _fake_build)
+
+    state = _state()
+    with pytest.raises(RuntimeError, match="max_loops exceeded"):
+        engine.run_turn(state, requested_workflow_id="loop_wf")
+    assert state["runtime"]["loop_count"] == 1

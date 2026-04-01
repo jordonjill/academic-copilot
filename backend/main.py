@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from src.interfaces.api.routes import admin, chat, health
 from src.interfaces.api.service import reload_runtime_config, warn_timeout_misconfiguration_once
+from src.infrastructure.memory.stm import drain_ltm_tasks
 from src.infrastructure.tools.loader import initialize_tools
 
 logging.basicConfig(level=logging.INFO)
@@ -36,6 +37,15 @@ def _chat_max_workers() -> int:
     except ValueError:
         workers = 4
     return max(1, workers)
+
+
+def _ltm_drain_timeout_seconds() -> float:
+    raw = os.getenv("LTM_DRAIN_TIMEOUT_SECONDS", "5").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 5.0
+    return max(0.1, value)
 
 
 @asynccontextmanager
@@ -78,6 +88,21 @@ async def lifespan(app: FastAPI):
             raise
         yield
     finally:
+        try:
+            report = await drain_ltm_tasks(timeout_seconds=_ltm_drain_timeout_seconds())
+            if report.get("initial_pending", 0) > 0:
+                logger.info(
+                    "LTM background drain report: initial=%s completed=%s cancelled=%s "
+                    "remaining=%s timed_out=%s timeout=%.1fs",
+                    report.get("initial_pending", 0),
+                    report.get("completed", 0),
+                    report.get("cancelled", 0),
+                    report.get("remaining_pending", 0),
+                    report.get("timed_out", False),
+                    report.get("timeout_seconds", 0.0),
+                )
+        except Exception as exc:
+            logger.exception("Failed to drain LTM background tasks on shutdown: %s", exc)
         if _DEFAULT_EXECUTOR is not None:
             _DEFAULT_EXECUTOR.shutdown(wait=False, cancel_futures=True)
             _DEFAULT_EXECUTOR = None
