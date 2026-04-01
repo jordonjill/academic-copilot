@@ -134,6 +134,13 @@ class WorkflowRuntime:
                 left = float(value)
                 right = float(expected)
             except (TypeError, ValueError):
+                logger.debug(
+                    "workflow.condition.numeric_coerce_failed workflow_id=%s value=%r expected=%r op=%s",
+                    self.spec.id,
+                    value,
+                    expected,
+                    op,
+                )
                 return False
             if op == "gt":
                 return left > right

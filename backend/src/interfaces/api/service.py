@@ -12,7 +12,6 @@ Academic Copilot 服务层。
 from __future__ import annotations
 
 import asyncio
-import os
 import json
 import logging
 import threading
@@ -27,6 +26,7 @@ from dotenv import load_dotenv
 from langchain_core.messages import BaseMessage, HumanMessage
 
 from src.application.runtime.config_registry import ConfigRegistry
+from src.application.runtime.env_utils import read_env_float
 from src.application.runtime.runtime_engine import RuntimeEngine
 from src.application.runtime.state_types import RuntimeState
 from src.infrastructure.memory import MemoryAdapter
@@ -397,24 +397,15 @@ def _log_event(event: str, **fields: Any) -> None:
 
 
 def _chat_turn_timeout_seconds() -> float:
-    raw = os.getenv("CHAT_TURN_TIMEOUT_SECONDS", "").strip()
-    if not raw:
-        return _DEFAULT_CHAT_TURN_TIMEOUT_SECONDS
-    try:
-        timeout = float(raw)
-    except ValueError:
-        return _DEFAULT_CHAT_TURN_TIMEOUT_SECONDS
-    if timeout <= 0:
-        return _DEFAULT_CHAT_TURN_TIMEOUT_SECONDS
-    return timeout
+    return read_env_float("CHAT_TURN_TIMEOUT_SECONDS", _DEFAULT_CHAT_TURN_TIMEOUT_SECONDS)
 
 
 def _warn_timeout_misconfiguration(chat_timeout: float) -> None:
     global _TIMEOUT_RELATION_WARNED
     if _TIMEOUT_RELATION_WARNED:
         return
-    supervisor_timeout = _env_float("SUPERVISOR_MAX_WALL_TIME_SECONDS", 180.0)
-    workflow_timeout = _env_float("WORKFLOW_MAX_WALL_TIME_SECONDS", 300.0)
+    supervisor_timeout = read_env_float("SUPERVISOR_MAX_WALL_TIME_SECONDS", 180.0)
+    workflow_timeout = read_env_float("WORKFLOW_MAX_WALL_TIME_SECONDS", 300.0)
     min_runtime_timeout = min(supervisor_timeout, workflow_timeout)
     if chat_timeout >= min_runtime_timeout:
         logger.warning(
@@ -428,14 +419,5 @@ def _warn_timeout_misconfiguration(chat_timeout: float) -> None:
     _TIMEOUT_RELATION_WARNED = True
 
 
-def _env_float(name: str, default: float) -> float:
-    raw = os.getenv(name, "").strip()
-    if not raw:
-        return default
-    try:
-        value = float(raw)
-    except ValueError:
-        return default
-    if value <= 0:
-        return default
-    return value
+def warn_timeout_misconfiguration_once() -> None:
+    _warn_timeout_misconfiguration(_chat_turn_timeout_seconds())

@@ -14,6 +14,7 @@ from langchain_openai import ChatOpenAI
 
 from src.application.runtime.agent_factory import build_agent_from_spec
 from src.application.runtime.config_registry import ConfigRegistry
+from src.application.runtime.env_utils import read_env_float
 from src.application.runtime.state_types import RuntimeState
 from src.application.runtime.spec_models import AgentSpec
 from src.application.runtime.workflow_router import WorkflowRuntime
@@ -95,7 +96,7 @@ class RuntimeEngine:
         max_steps = int(os.getenv("SUPERVISOR_MAX_STEPS", "8"))
         max_subagent_calls_per_agent = _read_int_env(_SUPERVISOR_MAX_SUBAGENT_CALLS_ENV, 2)
         max_subagent_calls_per_agent = max(0, max_subagent_calls_per_agent)
-        max_wall_seconds = _read_float_env("SUPERVISOR_MAX_WALL_TIME_SECONDS", 180.0)
+        max_wall_seconds = read_env_float("SUPERVISOR_MAX_WALL_TIME_SECONDS", 180.0)
         started = perf_counter()
         subagent_call_counts: dict[str, int] = {}
 
@@ -335,7 +336,7 @@ class RuntimeEngine:
 
         current_node = spec.entry_node
         visit_counts: dict[str, int] = {}
-        max_wall_seconds = _read_float_env("WORKFLOW_MAX_WALL_TIME_SECONDS", 300.0)
+        max_wall_seconds = read_env_float("WORKFLOW_MAX_WALL_TIME_SECONDS", 300.0)
         started = perf_counter()
 
         while True:
@@ -530,7 +531,7 @@ class RuntimeEngine:
             else float(profile.temperature)
         )
         cache_temperature = f"{round(temperature, 3):.3f}"
-        llm_timeout_seconds = _read_float_env("LLM_REQUEST_TIMEOUT_SECONDS", 60.0)
+        llm_timeout_seconds = read_env_float("LLM_REQUEST_TIMEOUT_SECONDS", 60.0)
         cache_timeout = f"{llm_timeout_seconds:.3f}"
 
         key = (profile_name, model, base_url, cache_temperature, cache_timeout)
@@ -718,16 +719,3 @@ def _read_int_env(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
-
-
-def _read_float_env(name: str, default: float) -> float:
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        value = float(raw)
-    except ValueError:
-        return default
-    if value <= 0:
-        return default
-    return value

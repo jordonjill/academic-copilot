@@ -36,12 +36,16 @@ backend/
 
 Copy `.env.example` to `.env` and set:
 
-- `ACCESS_KEY`
-- `OPENAI_API_KEY`
+- `ACCESS_KEY` (for `/chat` and `/health`)
+- `ADMIN_ACCESS_KEY` (for `/admin/*`)
+- `OPENAI_API_KEY` (required if any configured LLM profile uses OpenAI-compatible auth)
+- `DEEPSEEK_API_KEY` (optional, if using DeepSeek profile)
+- `QWEN_API_KEY` (optional, if using Qwen profile)
+- `OLLAMA_API_KEY` (optional, if using Ollama profile; can be any non-empty placeholder for local no-auth deployments)
 - `TAVILY_API_KEY`
-- `JINA_API_KEY`
-- `GOOGLE_API_KEY`
+- `JINA_API_KEY` (optional)
 - `ZOTERO_API_KEY` (optional)
+- Runtime/memory/tool envs shown in `.env.example` (`SUPERVISOR_MAX_*`, `WORKFLOW_MAX_*`, `CHAT_TURN_TIMEOUT_SECONDS`, `LLM_REQUEST_TIMEOUT_SECONDS`, `CHAT_MAX_WORKERS`, etc.)
 
 ## Run
 
@@ -60,13 +64,13 @@ The backend serves frontend static files from `../frontend`:
 
 ## API Endpoints
 
-- `POST /chat` (Bearer auth)
+- `POST /chat` (Bearer auth via `ACCESS_KEY`)
   - request: `message`, optional `workflow_id`, optional `session_id`, optional `user_id`
-- `GET /health` (Bearer auth)
-- `POST /admin/reload` (Bearer auth)
+- `GET /health` (Bearer auth via `ACCESS_KEY`)
+- `POST /admin/reload` (Bearer auth via `ADMIN_ACCESS_KEY`)
   - reload tools + runtime config
-- `POST /admin/reload-runtime` (Bearer auth)
-- `POST /admin/reload-tools` (Bearer auth)
+- `POST /admin/reload-runtime` (Bearer auth via `ADMIN_ACCESS_KEY`)
+- `POST /admin/reload-tools` (Bearer auth via `ADMIN_ACCESS_KEY`)
 
 ## Config & Validation
 
@@ -95,6 +99,23 @@ At startup, validation issues stop the app from booting.
   - start a workflow
 - Explicit `workflow_id` in `/chat` runs that workflow directly.
 - Workflow runtime enforces edge constraints and step/loop limits.
+
+## Timeout & Concurrency Tuning
+
+- `CHAT_TURN_TIMEOUT_SECONDS` is the API-layer timeout (`asyncio.wait_for`) for one `/chat` request.
+- `SUPERVISOR_MAX_WALL_TIME_SECONDS` limits supervisor loop wall-clock time.
+- `WORKFLOW_MAX_WALL_TIME_SECONDS` limits workflow loop wall-clock time.
+- `LLM_REQUEST_TIMEOUT_SECONDS` limits each single model call (passed into LLM client).
+- `CHAT_MAX_WORKERS` controls the default threadpool size for chat runtime execution.
+
+Recommended relation:
+
+- `CHAT_TURN_TIMEOUT_SECONDS < SUPERVISOR_MAX_WALL_TIME_SECONDS`
+- `CHAT_TURN_TIMEOUT_SECONDS < WORKFLOW_MAX_WALL_TIME_SECONDS`
+
+Operational note:
+
+- `asyncio.wait_for` timeout returns control to API caller, but cannot forcibly terminate a running executor thread instantly. Keep `CHAT_MAX_WORKERS` conservative and tune model/request timeouts to avoid worker exhaustion under peak load.
 
 ## Memory Pipeline
 

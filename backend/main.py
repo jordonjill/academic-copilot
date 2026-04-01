@@ -1,4 +1,6 @@
 """Academic Copilot — FastAPI 服务入口。"""
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import socket
@@ -13,48 +15,73 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from src.interfaces.api.routes import admin, chat, health
-from src.interfaces.api.service import reload_runtime_config
+from src.interfaces.api.service import reload_runtime_config, warn_timeout_misconfiguration_once
 from src.infrastructure.tools.loader import initialize_tools
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 BACKEND_DIR = Path(__file__).resolve().parent
 FRONTEND_DIR = BACKEND_DIR.parent / "frontend"
+_DEFAULT_EXECUTOR: ThreadPoolExecutor | None = None
 
 
 def _tools_strict_startup() -> bool:
     return os.getenv("TOOLS_STRICT_STARTUP", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _chat_max_workers() -> int:
+    raw = os.getenv("CHAT_MAX_WORKERS", "4").strip()
+    try:
+        workers = int(raw)
+    except ValueError:
+        workers = 4
+    return max(1, workers)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    del app
+    global _DEFAULT_EXECUTOR
     logger.info("Academic Copilot starting — initializing tools...")
+    loop = asyncio.get_running_loop()
+    _DEFAULT_EXECUTOR = ThreadPoolExecutor(
+        max_workers=_chat_max_workers(),
+        thread_name_prefix="copilot-worker",
+    )
+    loop.set_default_executor(_DEFAULT_EXECUTOR)
+    logger.info("Configured default chat executor max_workers=%d", _chat_max_workers())
     try:
-        tools_report = await initialize_tools()
-        runtime_report = reload_runtime_config()
-        runtime_failed = runtime_report.get("failed", [])
-        tools_failed = tools_report.get("failed", [])
-        if runtime_failed:
-            raise RuntimeError(f"Runtime config validation failed with {len(runtime_failed)} issue(s)")
-        if tools_failed and _tools_strict_startup():
-            raise RuntimeError(f"Tool initialization failed with {len(tools_failed)} issue(s)")
-        logger.info(
-            "Tools loaded: %d tools, %d servers",
-            len(tools_report.get("loaded_tools", [])),
-            len(tools_report.get("loaded_servers", [])),
-        )
-        if tools_failed:
-            logger.warning("Tools loaded with failures: %d", len(tools_failed))
-        logger.info(
-            "Runtime config loaded: %d agents, %d workflows",
-            len(runtime_report["loaded"]["agents"]),
-            len(runtime_report["loaded"]["workflows"]),
-        )
-    except Exception as e:
-        logger.error("Startup validation failed: %s", e)
-        raise
-    yield
-    logger.info("Academic Copilot shutdown.")
+        try:
+            warn_timeout_misconfiguration_once()
+            tools_report = await initialize_tools()
+            runtime_report = reload_runtime_config()
+            runtime_failed = runtime_report.get("failed", [])
+            tools_failed = tools_report.get("failed", [])
+            if runtime_failed:
+                raise RuntimeError(f"Runtime config validation failed with {len(runtime_failed)} issue(s)")
+            if tools_failed and _tools_strict_startup():
+                raise RuntimeError(f"Tool initialization failed with {len(tools_failed)} issue(s)")
+            logger.info(
+                "Tools loaded: %d tools, %d servers",
+                len(tools_report.get("loaded_tools", [])),
+                len(tools_report.get("loaded_servers", [])),
+            )
+            if tools_failed:
+                logger.warning("Tools loaded with failures: %d", len(tools_failed))
+            logger.info(
+                "Runtime config loaded: %d agents, %d workflows",
+                len(runtime_report["loaded"]["agents"]),
+                len(runtime_report["loaded"]["workflows"]),
+            )
+        except Exception as e:
+            logger.error("Startup validation failed: %s", e)
+            raise
+        yield
+    finally:
+        if _DEFAULT_EXECUTOR is not None:
+            _DEFAULT_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+            _DEFAULT_EXECUTOR = None
+        logger.info("Academic Copilot shutdown.")
 
 
 app = FastAPI(

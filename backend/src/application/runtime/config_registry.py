@@ -102,11 +102,23 @@ class ConfigRegistry:
                 record_failure("llm", llms_path, ValueError(f"LLM profile '{name}' must be a mapping"))
                 preserve_names.add(name)
                 continue
+            expanded: dict[str, Any] = {}
             try:
                 expanded = _expand_env_mapping(raw)
                 spec = LLMProfileSpec.model_validate({"name": name, **expanded})
             except (ValidationError, ValueError) as exc:
-                record_failure("llm", llms_path, exc)
+                unresolved = _collect_unresolved_placeholders(expanded or raw)
+                if unresolved:
+                    record_failure(
+                        "llm",
+                        llms_path,
+                        ValueError(
+                            f"LLM profile '{name}' has unresolved env placeholders: {', '.join(unresolved)}; "
+                            f"validation error: {exc}"
+                        ),
+                    )
+                else:
+                    record_failure("llm", llms_path, exc)
                 preserve_names.add(name)
                 continue
             new_llms[name] = spec
@@ -225,3 +237,13 @@ def _expand_env_var_non_strict(match: re.Match[str]) -> str:
     if raw is None:
         return match.group(0)
     return raw
+
+
+def _collect_unresolved_placeholders(data: dict[str, Any]) -> list[str]:
+    unresolved: set[str] = set()
+    for value in data.values():
+        if not isinstance(value, str):
+            continue
+        for token in _ENV_VAR_PATTERN.findall(value):
+            unresolved.add(token)
+    return sorted(unresolved)
