@@ -27,6 +27,7 @@ StepCallback = Callable[[Dict[str, Any]], None]
 _SUPERVISOR_AGENT_ENV = "SUPERVISOR_AGENT_ID"
 _DEFAULT_SUPERVISOR_AGENT_ID = "supervisor"
 _SUPERVISOR_MAX_SUBAGENT_CALLS_ENV = "SUPERVISOR_MAX_SUBAGENT_CALLS_PER_AGENT"
+_ENV_PLACEHOLDER_PATTERN = re.compile(r"\$\{\w+\}")
 logger = logging.getLogger(__name__)
 
 
@@ -35,7 +36,7 @@ class RuntimeEngine:
 
     def __init__(self, registry: ConfigRegistry) -> None:
         self.registry = registry
-        self._llm_cache: dict[tuple[str, str, str, str], BaseLanguageModel] = {}
+        self._llm_cache: dict[tuple[str, str, str, str, str], BaseLanguageModel] = {}
         self._llm_cache_lock = threading.Lock()
         self._llm_cache_hits = 0
         self._llm_cache_misses = 0
@@ -504,6 +505,18 @@ class RuntimeEngine:
         model = profile.model_name
         base_url = profile.base_url or ""
         api_key_env = (profile.api_key_env or "").strip()
+        if _ENV_PLACEHOLDER_PATTERN.search(model):
+            raise RuntimeError(
+                f"Unresolved env placeholder in model_name for llm profile '{profile_name}': {model}"
+            )
+        if base_url and _ENV_PLACEHOLDER_PATTERN.search(base_url):
+            raise RuntimeError(
+                f"Unresolved env placeholder in base_url for llm profile '{profile_name}': {base_url}"
+            )
+        if api_key_env and _ENV_PLACEHOLDER_PATTERN.search(api_key_env):
+            raise RuntimeError(
+                f"Unresolved env placeholder in api_key_env for llm profile '{profile_name}': {api_key_env}"
+            )
         api_key = ""
         if api_key_env:
             api_key = os.getenv(api_key_env, "").strip()
@@ -517,8 +530,10 @@ class RuntimeEngine:
             else float(profile.temperature)
         )
         cache_temperature = f"{round(temperature, 3):.3f}"
+        llm_timeout_seconds = _read_float_env("LLM_REQUEST_TIMEOUT_SECONDS", 60.0)
+        cache_timeout = f"{llm_timeout_seconds:.3f}"
 
-        key = (profile_name, model, base_url, cache_temperature)
+        key = (profile_name, model, base_url, cache_temperature, cache_timeout)
         with self._llm_cache_lock:
             cached = self._llm_cache.get(key)
             if cached is not None:
@@ -529,6 +544,7 @@ class RuntimeEngine:
         kwargs: dict[str, Any] = {
             "model": model,
             "temperature": temperature,
+            "timeout": llm_timeout_seconds,
         }
         if base_url:
             kwargs["base_url"] = base_url

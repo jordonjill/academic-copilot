@@ -135,3 +135,10 @@ def test_chat_rejects_unknown_workflow(monkeypatch):
         json={"message": "Hello", "workflow_id": "unknown_workflow"},
     )
     assert response.status_code == 400
+
+
+def test_admin_reload_rejected_when_admin_key_not_configured(monkeypatch):
+    monkeypatch.delenv("ADMIN_ACCESS_KEY", raising=False)
+    client = _build_client()
+    response = client.post("/admin/reload", headers=AUTH_HEADERS)
+    assert response.status_code == 403

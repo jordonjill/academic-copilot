@@ -41,8 +41,9 @@ _CONFIG_REGISTRY = ConfigRegistry(config_root=_CONFIG_ROOT)
 logger = logging.getLogger(__name__)
 _APP_LOCK = threading.Lock()
 _COPILOT_APP: Optional["AcademicCopilotApp"] = None
-_DEFAULT_CHAT_TURN_TIMEOUT_SECONDS = 300.0
+_DEFAULT_CHAT_TURN_TIMEOUT_SECONDS = 120.0
 _MAX_LAST_STATES = 128
+_TIMEOUT_RELATION_WARNED = False
 
 
 def get_config_registry() -> ConfigRegistry:
@@ -208,6 +209,7 @@ class AcademicCopilotApp:
 
         loop = asyncio.get_event_loop()
         timeout_seconds = _chat_turn_timeout_seconds()
+        _warn_timeout_misconfiguration(timeout_seconds)
         try:
             result = await asyncio.wait_for(
                 loop.run_in_executor(
@@ -405,3 +407,35 @@ def _chat_turn_timeout_seconds() -> float:
     if timeout <= 0:
         return _DEFAULT_CHAT_TURN_TIMEOUT_SECONDS
     return timeout
+
+
+def _warn_timeout_misconfiguration(chat_timeout: float) -> None:
+    global _TIMEOUT_RELATION_WARNED
+    if _TIMEOUT_RELATION_WARNED:
+        return
+    supervisor_timeout = _env_float("SUPERVISOR_MAX_WALL_TIME_SECONDS", 180.0)
+    workflow_timeout = _env_float("WORKFLOW_MAX_WALL_TIME_SECONDS", 300.0)
+    min_runtime_timeout = min(supervisor_timeout, workflow_timeout)
+    if chat_timeout >= min_runtime_timeout:
+        logger.warning(
+            "Timeout configuration may be suboptimal: CHAT_TURN_TIMEOUT_SECONDS(%.1f) "
+            ">= min(SUPERVISOR_MAX_WALL_TIME_SECONDS=%.1f, WORKFLOW_MAX_WALL_TIME_SECONDS=%.1f). "
+            "Consider setting chat timeout smaller than runtime loop timeouts.",
+            chat_timeout,
+            supervisor_timeout,
+            workflow_timeout,
+        )
+    _TIMEOUT_RELATION_WARNED = True
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if value <= 0:
+        return default
+    return value

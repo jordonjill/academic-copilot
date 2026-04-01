@@ -444,7 +444,7 @@ def test_registry_preserves_last_known_good(tmp_path):
     )
 
 
-def test_registry_llm_env_expansion_requires_defined_variables(tmp_path, monkeypatch):
+def test_registry_llm_env_expansion_allows_missing_variables_for_unused_profiles(tmp_path, monkeypatch):
     config_root = tmp_path / "config"
     config_root.mkdir(parents=True)
     monkeypatch.delenv("MISSING_LLM_BASE_URL", raising=False)
@@ -465,9 +465,6 @@ def test_registry_llm_env_expansion_requires_defined_variables(tmp_path, monkeyp
     registry = ConfigRegistry(config_root=config_root)
     report = registry.reload()
 
-    assert "test_llm" not in report["loaded_llms"]
-    assert any(
-        failure.get("type") == "llm"
-        and "Missing required environment variable: MISSING_LLM_BASE_URL" in failure.get("error", "")
-        for failure in report["failed_objects"]
-    )
+    assert "test_llm" in report["loaded_llms"]
+    assert registry.llms["test_llm"].base_url == "${MISSING_LLM_BASE_URL}"
+    assert report["failed_objects"] == []

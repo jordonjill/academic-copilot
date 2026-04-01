@@ -3,14 +3,20 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any, Callable, Dict, List, TypeVar
+from typing import Any, Callable, Dict, List, Protocol, TypeVar
 
 import yaml
 from pydantic import ValidationError
 
 from src.application.runtime.spec_models import AgentSpec, LLMProfileSpec, WorkflowSpec
 
-_SpecT = TypeVar("_SpecT")
+
+class _HasId(Protocol):
+    id: str
+
+
+_SpecT = TypeVar("_SpecT", bound=_HasId)
+_RecordFailure = Callable[[str, Path, Exception | str], None]
 
 
 class ConfigRegistry:
@@ -69,7 +75,7 @@ class ConfigRegistry:
     def _load_llms(
         self,
         llms_path: Path,
-        record_failure,
+        record_failure: _RecordFailure,
     ) -> tuple[Dict[str, LLMProfileSpec], set[str]]:
         new_llms: Dict[str, LLMProfileSpec] = {}
         preserve_names: set[str] = set()
@@ -110,7 +116,7 @@ class ConfigRegistry:
     def _load_agents(
         self,
         agents_dir: Path,
-        record_failure,
+        record_failure: _RecordFailure,
     ) -> tuple[Dict[str, AgentSpec], set[str]]:
         return self._load_typed_objects(
             kind="agent",
@@ -122,7 +128,7 @@ class ConfigRegistry:
     def _load_workflows(
         self,
         workflows_dir: Path,
-        record_failure,
+        record_failure: _RecordFailure,
     ) -> tuple[Dict[str, WorkflowSpec], set[str]]:
         return self._load_typed_objects(
             kind="workflow",
@@ -136,7 +142,7 @@ class ConfigRegistry:
         *,
         kind: str,
         root: Path,
-        record_failure,
+        record_failure: _RecordFailure,
         validator: Callable[[dict[str, Any]], _SpecT],
     ) -> tuple[Dict[str, _SpecT], set[str]]:
         loaded: Dict[str, _SpecT] = {}
@@ -154,7 +160,7 @@ class ConfigRegistry:
             raw_id = payload.get("id") if isinstance(payload, dict) else None
             try:
                 spec = validator(payload)
-            except ValidationError as exc:
+            except (ValidationError, ValueError) as exc:
                 record_failure(kind, path, exc)
                 if isinstance(raw_id, str):
                     preserve_ids.add(raw_id)
@@ -207,15 +213,15 @@ def _expand_env_mapping(data: dict[str, Any]) -> dict[str, Any]:
     expanded: dict[str, Any] = {}
     for key, value in data.items():
         if isinstance(value, str):
-            expanded[key] = _ENV_VAR_PATTERN.sub(_require_env_var, value)
+            expanded[key] = _ENV_VAR_PATTERN.sub(_expand_env_var_non_strict, value)
         else:
             expanded[key] = value
     return expanded
 
 
-def _require_env_var(match: re.Match[str]) -> str:
+def _expand_env_var_non_strict(match: re.Match[str]) -> str:
     name = match.group(1)
     raw = os.getenv(name)
     if raw is None:
-        raise ValueError(f"Missing required environment variable: {name}")
+        return match.group(0)
     return raw

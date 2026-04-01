@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
 from src.application.runtime.spec_models import WorkflowSpec
+
+logger = logging.getLogger(__name__)
 
 
 class WorkflowRuntime:
@@ -56,7 +59,15 @@ class WorkflowRuntime:
             field = condition.get("field")
             if not field:
                 return False
-            value = self._extract_field(state, field)
+            value, exists = self._extract_field_with_presence(state, field)
+            if not exists:
+                logger.debug(
+                    "workflow.condition.field_missing workflow_id=%s field=%s condition=%s",
+                    self.spec.id,
+                    field,
+                    condition,
+                )
+                return False
             op = str(condition.get("op") or "eq").strip().lower()
             expected = condition.get("value", condition.get("equals"))
             return self._evaluate_condition(value, expected, op)
@@ -69,7 +80,15 @@ class WorkflowRuntime:
             )
             if expr_match:
                 field, symbol, raw_expected = expr_match.groups()
-                value = self._extract_field(state, field)
+                value, exists = self._extract_field_with_presence(state, field)
+                if not exists:
+                    logger.debug(
+                        "workflow.expression.field_missing workflow_id=%s field=%s condition=%s",
+                        self.spec.id,
+                        field,
+                        condition,
+                    )
+                    return False
                 expected = self._parse_literal(raw_expected)
                 op = {
                     "==": "eq",
@@ -126,15 +145,23 @@ class WorkflowRuntime:
         return False
 
     def _extract_field(self, state: dict[str, Any], field_path: str) -> Any:
+        value, _ = self._extract_field_with_presence(state, field_path)
+        return value
+
+    def _extract_field_with_presence(self, state: dict[str, Any], field_path: str) -> tuple[Any, bool]:
         value: Any = state
         for part in field_path.split("."):
             if isinstance(value, dict):
+                if part not in value:
+                    return None, False
                 value = value.get(part)
             else:
-                value = getattr(value, part, None)
+                if not hasattr(value, part):
+                    return None, False
+                value = getattr(value, part)
             if value is None:
-                return None
-        return value
+                return None, True
+        return value, True
 
     def _string_condition_candidates(self, state: dict[str, Any]) -> list[str]:
         candidates: list[str] = []

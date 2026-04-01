@@ -1,5 +1,4 @@
 """Academic Copilot — FastAPI 服务入口。"""
-import json
 import logging
 import os
 import socket
@@ -79,32 +78,28 @@ async def request_observability_middleware(request, call_next):
         response = await call_next(request)
     except Exception:
         logger.exception(
-            json.dumps(
-                {
-                    "event": "http.request.error",
-                    "request_id": request_id,
-                    "method": request.method,
-                    "path": request.url.path,
-                    "duration_ms": round((perf_counter() - started) * 1000, 2),
-                },
-                ensure_ascii=False,
-            )
+            "http.request.error",
+            extra={
+                "event": "http.request.error",
+                "request_id": request_id,
+                "method": request.method,
+                "path": request.url.path,
+                "duration_ms": round((perf_counter() - started) * 1000, 2),
+            },
         )
         raise
     duration_ms = round((perf_counter() - started) * 1000, 2)
     response.headers["X-Request-ID"] = request_id
     logger.info(
-        json.dumps(
-            {
-                "event": "http.request.complete",
-                "request_id": request_id,
-                "method": request.method,
-                "path": request.url.path,
-                "status_code": response.status_code,
-                "duration_ms": duration_ms,
-            },
-            ensure_ascii=False,
-        )
+        "http.request.complete",
+        extra={
+            "event": "http.request.complete",
+            "request_id": request_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status_code": response.status_code,
+            "duration_ms": duration_ms,
+        },
     )
     return response
 

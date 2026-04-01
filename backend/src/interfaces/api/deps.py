@@ -34,8 +34,8 @@ async def verify_admin_access_key(
     expected = _expected_admin_access_key()
     if not expected:
         raise HTTPException(
-            status_code=503,
-            detail="ADMIN_ACCESS_KEY is not configured",
+            status_code=403,
+            detail="Admin endpoints are disabled: ADMIN_ACCESS_KEY is not configured",
         )
     if credentials.credentials != expected:
         raise HTTPException(
