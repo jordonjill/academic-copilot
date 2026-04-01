@@ -26,14 +26,14 @@ system_prompt: |
   - Keep reason concise.
 
   Return JSON only:
-  {
+  {{
     "action": "direct_reply|run_subagent|start_workflow",
     "target": "agent_id|workflow_id|null",
     "message": "final reply when action=direct_reply",
     "instruction": "task for subagent when action=run_subagent",
     "done": false,
     "reason": "short rationale"
-  }
+  }}
 tools: []
 llm:
   name: openai_default

@@ -42,6 +42,8 @@ load_dotenv()
 _CONFIG_ROOT = Path(__file__).resolve().parents[3] / "config"
 _CONFIG_REGISTRY = ConfigRegistry(config_root=_CONFIG_ROOT)
 logger = logging.getLogger(__name__)
+_APP_LOCK = threading.Lock()
+_COPILOT_BY_MODEL: dict[str, "AcademicCopilotApp"] = {}
 _DEFAULT_CHAT_TURN_TIMEOUT_SECONDS = 120.0
 _MAX_LAST_STATES = 128
 _TIMEOUT_RELATION_WARNED_FOR: tuple[float, float, float, float] | None = None
@@ -418,7 +420,14 @@ class AcademicCopilotApp:
 # ── 工厂函数 ─────────────────────────────────────────────────────────────────
 
 def create_copilot(model_type: str = "ollama") -> AcademicCopilotApp:
-    return AcademicCopilotApp(model_type=model_type)
+    key = (model_type or "ollama").strip() or "ollama"
+    with _APP_LOCK:
+        existing = _COPILOT_BY_MODEL.get(key)
+        if existing is not None:
+            return existing
+        app = AcademicCopilotApp(model_type=key)
+        _COPILOT_BY_MODEL[key] = app
+        return app
 
 
 def _ts() -> str:

@@ -40,6 +40,82 @@ def test_resolve_llm_rejects_unresolved_base_url_placeholder(tmp_path):
         engine._resolve_llm(spec)
 
 
+def test_resolve_llm_sets_custom_user_agent_for_non_openai_host(monkeypatch, tmp_path):
+    registry = ConfigRegistry(config_root=tmp_path)
+    registry.llms = {
+        "openai_default": LLMProfileSpec.model_validate(
+            {
+                "name": "openai_default",
+                "model_name": "gpt-5",
+                "base_url": "https://proxy.example.com/v1",
+                "temperature": 0.0,
+            }
+        )
+    }
+    spec = AgentSpec.model_validate(
+        {
+            "id": "supervisor",
+            "name": "Supervisor",
+            "mode": "chain",
+            "system_prompt": "x",
+            "tools": [],
+            "llm": {"name": "openai_default"},
+        }
+    )
+
+    captured_kwargs: dict[str, object] = {}
+
+    class _FakeChatOpenAI:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+
+    monkeypatch.setenv("OPENAI_COMPAT_USER_AGENT", "AcademicCopilot/Test")
+    monkeypatch.setattr("src.application.runtime.runtime_engine.ChatOpenAI", _FakeChatOpenAI)
+
+    engine = RuntimeEngine(registry=registry)
+    engine._resolve_llm(spec)
+
+    assert captured_kwargs["default_headers"] == {"User-Agent": "AcademicCopilot/Test"}
+
+
+def test_resolve_llm_keeps_openai_host_default_user_agent(monkeypatch, tmp_path):
+    registry = ConfigRegistry(config_root=tmp_path)
+    registry.llms = {
+        "openai_default": LLMProfileSpec.model_validate(
+            {
+                "name": "openai_default",
+                "model_name": "gpt-5",
+                "base_url": "https://api.openai.com/v1",
+                "temperature": 0.0,
+            }
+        )
+    }
+    spec = AgentSpec.model_validate(
+        {
+            "id": "supervisor",
+            "name": "Supervisor",
+            "mode": "chain",
+            "system_prompt": "x",
+            "tools": [],
+            "llm": {"name": "openai_default"},
+        }
+    )
+
+    captured_kwargs: dict[str, object] = {}
+
+    class _FakeChatOpenAI:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+
+    monkeypatch.setenv("OPENAI_COMPAT_USER_AGENT", "AcademicCopilot/Test")
+    monkeypatch.setattr("src.application.runtime.runtime_engine.ChatOpenAI", _FakeChatOpenAI)
+
+    engine = RuntimeEngine(registry=registry)
+    engine._resolve_llm(spec)
+
+    assert "default_headers" not in captured_kwargs
+
+
 def test_resolve_llm_reuses_single_instance_under_concurrency(monkeypatch, tmp_path):
     registry = ConfigRegistry(config_root=tmp_path)
     registry.llms = {

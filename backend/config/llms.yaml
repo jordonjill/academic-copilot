@@ -1,9 +1,9 @@
 llms:
   openai_default:
-    model_name: gpt-4o-mini
-    base_url: https://api.openai.com/v1
+    model_name: gpt-5
+    base_url: https://api.ikuncode.cc/v1
     api_key_env: OPENAI_API_KEY
-    temperature: 0.0
+    temperature: 0.6
 
   deepseek_default:
     model_name: deepseek-chat

@@ -10,6 +10,7 @@ import threading
 from collections import OrderedDict
 from time import perf_counter
 from typing import Any, Callable, Dict, Optional
+from urllib.parse import urlparse
 
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
@@ -42,7 +43,9 @@ class RuntimeEngine:
 
     def __init__(self, registry: ConfigRegistry) -> None:
         self.registry = registry
-        self._llm_cache: OrderedDict[tuple[str, str, str, str, str], BaseLanguageModel] = OrderedDict()
+        self._llm_cache: OrderedDict[
+            tuple[str, str, str, str, str, str], BaseLanguageModel
+        ] = OrderedDict()
         self._llm_cache_max_size = max(1, _read_int_env("LLM_CACHE_MAX_SIZE", 128))
         self._chain_context_messages_window = max(1, _read_int_env("CHAIN_CONTEXT_MESSAGES_WINDOW", 12))
         self._llm_cache_lock = threading.Lock()
@@ -928,8 +931,17 @@ class RuntimeEngine:
         cache_temperature = f"{round(temperature, 3):.3f}"
         llm_timeout_seconds = read_env_float("LLM_REQUEST_TIMEOUT_SECONDS", 60.0)
         cache_timeout = f"{llm_timeout_seconds:.3f}"
+        user_agent = _resolve_openai_compat_user_agent(base_url)
+        cache_user_agent = user_agent or ""
 
-        key = (profile_name, model, base_url, cache_temperature, cache_timeout)
+        key = (
+            profile_name,
+            model,
+            base_url,
+            cache_temperature,
+            cache_timeout,
+            cache_user_agent,
+        )
         kwargs: dict[str, Any] = {
             "model": model,
             "temperature": temperature,
@@ -939,6 +951,8 @@ class RuntimeEngine:
             kwargs["base_url"] = base_url
         if api_key:
             kwargs["api_key"] = api_key
+        if user_agent:
+            kwargs["default_headers"] = {"User-Agent": user_agent}
 
         with self._llm_cache_lock:
             cached = self._llm_cache.get(key)
@@ -1207,3 +1221,13 @@ def _read_int_env(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _resolve_openai_compat_user_agent(base_url: str) -> str:
+    normalized_base_url = (base_url or "").strip()
+    if not normalized_base_url:
+        return ""
+    hostname = (urlparse(normalized_base_url).hostname or "").lower()
+    if hostname == "api.openai.com":
+        return ""
+    return os.getenv("OPENAI_COMPAT_USER_AGENT", "AcademicCopilot/1.0").strip()
