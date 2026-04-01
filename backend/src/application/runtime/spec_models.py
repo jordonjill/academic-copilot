@@ -2,12 +2,22 @@ from __future__ import annotations
 
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class LLMConfig(BaseModel):
-    provider: str
-    model: str
+    # Strict mode: agent must reference a named LLM profile from config/llms.yaml.
+    name: str
+    temperature: Optional[float] = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class LLMProfileSpec(BaseModel):
+    name: str
+    model_name: str
+    base_url: Optional[str] = None
+    api_key_env: Optional[str] = None
     temperature: float = 0.0
 
     model_config = ConfigDict(extra="forbid")
@@ -30,6 +40,14 @@ class AgentSpec(BaseModel):
     hooks: Optional[HooksConfig] = None
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _validate_tools_for_mode(self) -> "AgentSpec":
+        if self.mode == "chain" and self.tools:
+            raise ValueError(
+                "chain mode does not support tools; set tools to [] or switch mode to 'react'"
+            )
+        return self
 
 
 class WorkflowSpec(BaseModel):

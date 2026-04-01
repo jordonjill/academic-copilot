@@ -18,21 +18,18 @@ class DummyTool(BaseTool):
         return "ok"
 
 
-def test_build_chain_agent_from_spec_resolves_tools(monkeypatch):
+def test_build_chain_agent_from_spec_skips_tool_resolution(monkeypatch):
     spec = AgentSpec(
         id="planner",
         name="Planner Agent",
         mode="chain",
         system_prompt="You plan",
-        tools=["web_search", "arxiv"],
-        llm={"provider": "openai", "model": "gpt-4o-mini"},
+        tools=[],
+        llm={"name": "openai_default"},
     )
 
-    resolved = []
-
     def tool_resolver(tool_id):
-        resolved.append(tool_id)
-        return DummyTool(name=f"tool:{tool_id}")
+        raise RuntimeError(f"tool resolver should not be called for chain mode: {tool_id}")
 
     captured = {}
 
@@ -51,11 +48,10 @@ def test_build_chain_agent_from_spec_resolves_tools(monkeypatch):
     result = agent_runtime.build_agent_from_spec(spec, llm, tool_resolver)
 
     assert result == "agent_instance"
-    assert resolved == ["web_search", "arxiv"]
     assert captured["mode"] == AgentMode.CHAIN
     assert captured["llm"] is llm
     assert captured["prompt"] == "You plan"
-    assert [tool.name for tool in captured["tools"]] == ["tool:web_search", "tool:arxiv"]
+    assert captured["tools"] == []
     assert captured["name"] == "planner"
     assert captured["output_schema"] is None
 
@@ -67,7 +63,7 @@ def test_build_react_agent_from_spec_wires_mode(monkeypatch):
         mode="react",
         system_prompt="You research",
         tools=["web_search"],
-        llm={"provider": "openai", "model": "gpt-4o-mini"},
+        llm={"name": "openai_default"},
     )
 
     def tool_resolver(tool_id):
@@ -102,10 +98,10 @@ def test_build_agent_from_spec_raises_on_resolver_error():
     spec = AgentSpec(
         id="planner",
         name="Planner Agent",
-        mode="chain",
+        mode="react",
         system_prompt="You plan",
         tools=["web_search"],
-        llm={"provider": "openai", "model": "gpt-4o-mini"},
+        llm={"name": "openai_default"},
     )
 
     def tool_resolver(tool_id):
@@ -120,10 +116,10 @@ def test_build_agent_from_spec_raises_on_missing_tool():
     spec = AgentSpec(
         id="planner",
         name="Planner Agent",
-        mode="chain",
+        mode="react",
         system_prompt="You plan",
         tools=["arxiv"],
-        llm={"provider": "openai", "model": "gpt-4o-mini"},
+        llm={"name": "openai_default"},
     )
 
     def tool_resolver(tool_id):

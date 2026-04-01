@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import sys
+from types import SimpleNamespace
+
 import yaml
 
 from src.infrastructure.tools.tool_manager import ToolManager
@@ -52,3 +56,60 @@ def test_tool_manager_handles_missing_catalog_gracefully(tmp_path):
 
     assert report["loaded_tools"] == []
     assert manager.get_tool("web_search") is None
+
+
+def test_tool_manager_loads_mcp_tools_with_async_client(monkeypatch, tmp_path):
+    catalog_path = tmp_path / "tools.yaml"
+    payload = {
+        "version": "1.0",
+        "servers": {
+            "filesystem": {
+                "transport": "stdio",
+                "enabled": True,
+                "command": "python",
+                "args": ["fake_server.py"],
+            }
+        },
+        "tools": {
+            "filesystem": {
+                "transport": "mcp",
+                "server": "filesystem",
+                "tool_name": "read_file",
+                "enabled": True,
+            }
+        },
+    }
+    catalog_path.write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    class _FakeMCPTool:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.description = "fake mcp tool"
+
+    class _FakeMultiServerMCPClient:
+        def __init__(self, connections):
+            self.connections = connections
+
+        async def get_tools(self, *, server_name=None):
+            if server_name == "filesystem":
+                return [_FakeMCPTool("read_file")]
+            return []
+
+        async def __aenter__(self):
+            raise AssertionError("ToolManager must not use MultiServerMCPClient as async context manager")
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    monkeypatch.setitem(
+        sys.modules,
+        "langchain_mcp_adapters.client",
+        SimpleNamespace(MultiServerMCPClient=_FakeMultiServerMCPClient),
+    )
+
+    manager = ToolManager(catalog_path=catalog_path)
+    report = asyncio.run(manager.reload())
+
+    assert "filesystem" in report["loaded_servers"]
+    assert "filesystem" in report["loaded_tools"]
+    assert manager.get_tool("filesystem") is not None

@@ -35,6 +35,4 @@ system_prompt: |
   }
 tools: []
 llm:
-  provider: openai
-  model: gpt-4o-mini
-  temperature: 0.0
+  name: openai_default

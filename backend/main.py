@@ -23,11 +23,16 @@ FRONTEND_DIR = BACKEND_DIR.parent / "frontend"
 async def lifespan(app: FastAPI):
     logger.info("Academic Copilot starting — initializing tools...")
     try:
-        await initialize_tools()
+        tools_report = await initialize_tools()
         runtime_report = reload_runtime_config()
         failed = runtime_report.get("failed", [])
         if failed:
             raise RuntimeError(f"Runtime config validation failed with {len(failed)} issue(s)")
+        logger.info(
+            "Tools loaded: %d tools, %d servers",
+            len(tools_report.get("loaded_tools", [])),
+            len(tools_report.get("loaded_servers", [])),
+        )
         logger.info(
             "Runtime config loaded: %d agents, %d workflows",
             len(runtime_report["loaded"]["agents"]),

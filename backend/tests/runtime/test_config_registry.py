@@ -52,9 +52,7 @@ def test_registry_loads_workflow_and_agents(tmp_path):
                 "  Decide whether to search for sources or synthesize findings.",
                 "tools: []",
                 "llm:",
-                "  provider: openai",
-                "  model: gpt-4o-mini",
-                "  temperature: 0.0",
+                "  name: openai_default",
             ]
         )
     )
@@ -102,9 +100,7 @@ def test_registry_partial_failure_isolated(tmp_path):
                 "  Decide whether to search for sources or synthesize findings.",
                 "tools: []",
                 "llm:",
-                "  provider: openai",
-                "  model: gpt-4o-mini",
-                "  temperature: 0.0",
+                "  name: openai_default",
             ]
         )
     )
@@ -115,8 +111,7 @@ def test_registry_partial_failure_isolated(tmp_path):
                 "mode: chain",
                 "system_prompt: oops",
                 "llm:",
-                "  provider: openai",
-                "  model: gpt-4o-mini",
+                "  name: openai_default",
             ]
         )
     )
@@ -170,9 +165,7 @@ def test_registry_reload_increments_and_replaces_state(tmp_path):
                 "  Decide whether to search for sources or synthesize findings.",
                 "tools: []",
                 "llm:",
-                "  provider: openai",
-                "  model: gpt-4o-mini",
-                "  temperature: 0.0",
+                "  name: openai_default",
             ]
         )
     )
@@ -210,9 +203,7 @@ def test_registry_reload_increments_and_replaces_state(tmp_path):
                 "  Decide with updated context.",
                 "tools: []",
                 "llm:",
-                "  provider: openai",
-                "  model: gpt-4o-mini",
-                "  temperature: 0.0",
+                "  name: openai_default",
             ]
         )
     )
@@ -226,9 +217,7 @@ def test_registry_reload_increments_and_replaces_state(tmp_path):
                 "  Extra behavior for reload test.",
                 "tools: []",
                 "llm:",
-                "  provider: openai",
-                "  model: gpt-4o-mini",
-                "  temperature: 0.0",
+                "  name: openai_default",
             ]
         )
     )
@@ -274,9 +263,7 @@ def test_registry_survives_oserror(tmp_path, monkeypatch):
                 "  Decide whether to search for sources or synthesize findings.",
                 "tools: []",
                 "llm:",
-                "  provider: openai",
-                "  model: gpt-4o-mini",
-                "  temperature: 0.0",
+                "  name: openai_default",
             ]
         )
     )
@@ -337,9 +324,7 @@ def test_registry_duplicate_id_rejected(tmp_path):
                 "  First version.",
                 "tools: []",
                 "llm:",
-                "  provider: openai",
-                "  model: gpt-4o-mini",
-                "  temperature: 0.0",
+                "  name: openai_default",
             ]
         )
     )
@@ -353,9 +338,7 @@ def test_registry_duplicate_id_rejected(tmp_path):
                 "  Second version.",
                 "tools: []",
                 "llm:",
-                "  provider: openai",
-                "  model: gpt-4o-mini",
-                "  temperature: 0.0",
+                "  name: openai_default",
             ]
         )
     )
@@ -411,9 +394,7 @@ def test_registry_preserves_last_known_good(tmp_path):
                 "  Decide whether to search for sources or synthesize findings.",
                 "tools: []",
                 "llm:",
-                "  provider: openai",
-                "  model: gpt-4o-mini",
-                "  temperature: 0.0",
+                "  name: openai_default",
             ]
         )
     )
@@ -448,8 +429,7 @@ def test_registry_preserves_last_known_good(tmp_path):
                 "mode: chain",
                 "system_prompt: invalid now",
                 "llm:",
-                "  provider: openai",
-                "  model: gpt-4o-mini",
+                "  name: openai_default",
             ]
         )
     )

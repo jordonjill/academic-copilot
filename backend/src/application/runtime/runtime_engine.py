@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from typing import Any, Callable, Dict, Optional
 
-from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_ollama.chat_models import ChatOllama
+from langchain_openai import ChatOpenAI
 
 from src.application.runtime.agent_factory import build_agent_from_spec
 from src.application.runtime.config_registry import ConfigRegistry
@@ -23,6 +23,8 @@ Respond concisely and in the same language as the user."""
 StepCallback = Callable[[Dict[str, Any]], None]
 _SUPERVISOR_AGENT_ENV = "SUPERVISOR_AGENT_ID"
 _DEFAULT_SUPERVISOR_AGENT_ID = "supervisor"
+_SUPERVISOR_MAX_SUBAGENT_CALLS_ENV = "SUPERVISOR_MAX_SUBAGENT_CALLS_PER_AGENT"
+logger = logging.getLogger(__name__)
 
 
 class RuntimeEngine:
@@ -30,7 +32,7 @@ class RuntimeEngine:
 
     def __init__(self, registry: ConfigRegistry) -> None:
         self.registry = registry
-        self._llm_cache: dict[tuple[str, str, float], BaseLanguageModel] = {}
+        self._llm_cache: dict[tuple[str, str, str, float], BaseLanguageModel] = {}
 
     def run_turn(
         self,
@@ -77,18 +79,17 @@ class RuntimeEngine:
 
         supervisor_spec = self._resolve_supervisor_spec()
         if supervisor_spec is None:
-            fallback_workflow = self._infer_workflow_id_from_text(state["input"].get("user_text", ""))
-            if fallback_workflow:
-                self._run_workflow(state, fallback_workflow, step_callback)
-                self._finalize_with_supervisor(state, requested_workflow_id=fallback_workflow)
-            else:
-                self._run_chitchat(state)
+            self._run_chitchat(state)
             return
         if supervisor_spec.mode != "chain":
             self._run_chitchat(state)
             return
 
         max_steps = int(os.getenv("SUPERVISOR_MAX_STEPS", "8"))
+        max_subagent_calls_per_agent = _read_int_env(_SUPERVISOR_MAX_SUBAGENT_CALLS_ENV, 2)
+        max_subagent_calls_per_agent = max(0, max_subagent_calls_per_agent)
+        subagent_call_counts: dict[str, int] = {}
+
         for _ in range(max_steps):
             decision = self._decide_next_action(
                 state=state,
@@ -99,6 +100,13 @@ class RuntimeEngine:
             if not isinstance(action, str):
                 action = "direct_reply"
             action = action.strip().lower()
+            logger.info(
+                "supervisor.decision action=%s target=%s done=%s step_count=%s",
+                action,
+                decision.get("target"),
+                bool(decision.get("done")),
+                state["runtime"].get("step_count", 0),
+            )
 
             if action == "start_workflow":
                 workflow_id = self._resolve_workflow_target(decision, state)
@@ -112,6 +120,23 @@ class RuntimeEngine:
             if action == "run_subagent":
                 agent_id = self._resolve_subagent_target(decision)
                 if agent_id and agent_id in self.registry.agents and agent_id != supervisor_spec.id:
+                    calls_used = subagent_call_counts.get(agent_id, 0)
+                    if calls_used >= max_subagent_calls_per_agent:
+                        logger.warning(
+                            "supervisor.subagent_limit_reached agent_id=%s limit=%s",
+                            agent_id,
+                            max_subagent_calls_per_agent,
+                        )
+                        state["context"]["messages"].append(
+                            SystemMessage(
+                                content=(
+                                    f"Supervisor guardrail: subagent '{agent_id}' call limit reached "
+                                    f"({max_subagent_calls_per_agent}) in current turn. Choose another action."
+                                )
+                            )
+                        )
+                        continue
+
                     instruction = decision.get("instruction")
                     if isinstance(instruction, str) and instruction.strip():
                         state["artifacts"]["supervisor_instruction"] = instruction
@@ -119,6 +144,7 @@ class RuntimeEngine:
                             HumanMessage(content=f"Supervisor task for {agent_id}: {instruction}")
                         )
                     self._execute_agent(state, agent_id, agent_id)
+                    subagent_call_counts[agent_id] = calls_used + 1
                     state["runtime"]["step_count"] += 1
                     if step_callback is not None:
                         step_callback(
@@ -229,6 +255,7 @@ class RuntimeEngine:
         return normalized
 
     def _resolve_workflow_target(self, decision: Dict[str, Any], state: Dict[str, Any]) -> Optional[str]:
+        del state
         target = decision.get("target")
         if isinstance(target, str) and target in self.registry.workflows:
             return target
@@ -237,9 +264,6 @@ class RuntimeEngine:
         if isinstance(workflow_hint, str) and workflow_hint in self.registry.workflows:
             return workflow_hint
 
-        inferred = self._infer_workflow_id_from_text(state["input"].get("user_text", ""))
-        if inferred:
-            return inferred
         return None
 
     def _resolve_subagent_target(self, decision: Dict[str, Any]) -> Optional[str]:
@@ -249,22 +273,6 @@ class RuntimeEngine:
         agent_hint = decision.get("agent_id")
         if isinstance(agent_hint, str):
             return agent_hint
-        return None
-
-    def _infer_workflow_id_from_text(self, user_text: str) -> Optional[str]:
-        lowered = (user_text or "").strip().lower()
-        if not lowered:
-            return None
-        if (
-            any(marker in lowered for marker in ("提案", "proposal", "research proposal"))
-            and "proposal_v2" in self.registry.workflows
-        ):
-            return "proposal_v2"
-        if (
-            any(marker in lowered for marker in ("综述", "survey", "literature review", "review paper"))
-            and "survey_workflow" in self.registry.workflows
-        ):
-            return "survey_workflow"
         return None
 
     def _finalize_with_supervisor(
@@ -325,6 +333,13 @@ class RuntimeEngine:
                 }
             )
             state["runtime"]["current_node"] = current_node
+            logger.info(
+                "workflow.step workflow_id=%s current_node=%s step_count=%s loop_count=%s",
+                workflow_id,
+                current_node,
+                state["runtime"].get("step_count", 0),
+                state["runtime"].get("loop_count", 0),
+            )
 
             node_spec = spec.nodes.get(current_node)
             if not node_spec:
@@ -454,7 +469,7 @@ class RuntimeEngine:
             "artifacts": json.dumps(artifacts, ensure_ascii=False, default=str),
             "agent_id": agent_id,
             "node_name": node_name,
-            # compatibility shortcuts for common prompts
+            # common shortcuts for current workflow prompts
             "initial_topic": artifacts.get("topic") or state["input"].get("user_text", ""),
             "retrieved_resources": json.dumps(artifacts.get("retrieved_resources", []), ensure_ascii=False, default=str),
             "feedback_section": artifacts.get("feedback_section", ""),
@@ -466,17 +481,41 @@ class RuntimeEngine:
         return payload
 
     def _resolve_llm(self, spec: AgentSpec) -> BaseLanguageModel:
-        provider = spec.llm.provider
-        model = spec.llm.model
-        temperature = float(spec.llm.temperature)
-        key = (provider, model, temperature)
+        llm_ref = spec.llm
+        profile_name = llm_ref.name.strip()
+        profile = self.registry.llms.get(profile_name)
+        if profile is None:
+            raise RuntimeError(f"Unknown llm profile name: {profile_name}")
+
+        model = profile.model_name
+        base_url = profile.base_url or ""
+        api_key_env = (profile.api_key_env or "").strip()
+        api_key = ""
+        if api_key_env:
+            api_key = os.getenv(api_key_env, "").strip()
+            if not api_key:
+                raise RuntimeError(
+                    f"Missing API key env '{api_key_env}' for llm profile '{profile_name}'"
+                )
+        temperature = (
+            float(llm_ref.temperature)
+            if llm_ref.temperature is not None
+            else float(profile.temperature)
+        )
+
+        key = (profile_name, model, base_url, temperature)
         if key in self._llm_cache:
             return self._llm_cache[key]
 
-        if provider == "ollama":
-            llm: BaseLanguageModel = ChatOllama(model=model, temperature=temperature)
-        else:
-            llm = init_chat_model(model=model, model_provider=provider, temperature=temperature)
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "temperature": temperature,
+        }
+        if base_url:
+            kwargs["base_url"] = base_url
+        if api_key:
+            kwargs["api_key"] = api_key
+        llm = ChatOpenAI(**kwargs)
 
         self._llm_cache[key] = llm
         return llm
@@ -505,15 +544,28 @@ class RuntimeEngine:
 
     def health_probe(self) -> Dict[str, Any]:
         self._ensure_registry_loaded()
-        default_llm = self._resolve_default_llm()
         supervisor = self._resolve_supervisor_spec()
+        errors: list[str] = []
+
+        default_llm_type: Optional[str] = None
+        try:
+            default_llm = self._resolve_default_llm()
+            default_llm_type = default_llm.__class__.__name__
+        except Exception as exc:
+            errors.append(f"default_llm_error: {exc}")
+
         tool = get_tool("web_search")
+        if tool is None:
+            errors.append("tool_error: web_search unavailable")
+
         return {
+            "ok": len(errors) == 0,
             "loaded_agents": len(self.registry.agents),
             "loaded_workflows": len(self.registry.workflows),
             "supervisor_agent_id": supervisor.id if supervisor else None,
-            "default_llm_type": default_llm.__class__.__name__,
+            "default_llm_type": default_llm_type,
             "tool_manager_initialized": tool is not None,
+            "errors": errors,
         }
 
     def _resolve_tool(self, tool_id: str):
@@ -607,3 +659,13 @@ class RuntimeEngine:
                 "artifacts": state.get("artifacts", {}),
             },
         }
+
+
+def _read_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default

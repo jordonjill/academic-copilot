@@ -33,7 +33,6 @@ system_prompt: |
 tools:
   - arxiv
   - web_search
+  - filesystem
 llm:
-  provider: openai
-  model: gpt-4o-mini
-  temperature: 0.0
+  name: openai_default

@@ -182,45 +182,27 @@ class ToolManager:
             return
 
         try:
-            async with MultiServerMCPClient(mcp_server_params) as client:
-                combined_tools: list[BaseTool] | None = None
-                for server_name in mcp_server_params:
-                    tools: list[BaseTool] = []
-                    try:
-                        try:
-                            tools = client.get_tools(server_name=server_name)
-                        except TypeError:
-                            try:
-                                tools = client.get_tools(server_name)
-                            except TypeError:
-                                pass
-
-                        if not tools:
-                            if combined_tools is None:
-                                combined_tools = list(client.get_tools())
-                            if len(mcp_server_params) == 1:
-                                tools = list(combined_tools)
-                            else:
-                                prefix = f"{server_name}."
-                                tools = [
-                                    t
-                                    for t in combined_tools
-                                    if getattr(t, "name", "").startswith(prefix)
-                                ]
-                        self._server_tools[server_name] = tools
-                        logger.info(
-                            "Loaded %d MCP tools from server '%s'",
-                            len(tools),
-                            server_name,
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Failed to fetch MCP tools for server '%s'",
-                            server_name,
-                        )
-                        self._server_tools[server_name] = []
+            client = MultiServerMCPClient(mcp_server_params)
         except Exception:
             logger.exception("MCP client initialization failed")
+            return
+
+        for server_name in mcp_server_params:
+            tools: list[BaseTool] = []
+            try:
+                tools = list(await client.get_tools(server_name=server_name))
+                self._server_tools[server_name] = tools
+                logger.info(
+                    "Loaded %d MCP tools from server '%s'",
+                    len(tools),
+                    server_name,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to fetch MCP tools for server '%s'",
+                    server_name,
+                )
+                self._server_tools[server_name] = []
 
     def _collect_enabled_internal_tools(self) -> dict[str, BaseTool]:
         tools: dict[str, BaseTool] = {}

@@ -50,22 +50,23 @@ def build_agent_from_spec(
     llm: BaseLanguageModel,
     tool_resolver: ToolResolver,
 ) -> Runnable | Any:
-    tools: List[BaseTool] = []
-    for tool_id in spec.tools:
-        try:
-            tool = tool_resolver(tool_id)
-        except Exception as exc:
-            raise ValueError(f"Failed to resolve tool: {tool_id}") from exc
-        if tool is None:
-            raise ValueError(f"Tool resolver returned None for: {tool_id}")
-        tools.append(tool)
-
     if spec.mode == "chain":
         mode = AgentMode.CHAIN
     elif spec.mode == "react":
         mode = AgentMode.REACT
     else:
         raise ValueError(f"Unknown agent mode: {spec.mode}")
+
+    tools: List[BaseTool] = []
+    if mode == AgentMode.REACT:
+        for tool_id in spec.tools:
+            try:
+                tool = tool_resolver(tool_id)
+            except Exception as exc:
+                raise ValueError(f"Failed to resolve tool: {tool_id}") from exc
+            if tool is None:
+                raise ValueError(f"Tool resolver returned None for: {tool_id}")
+            tools.append(tool)
 
     return create_subagent(
         mode,

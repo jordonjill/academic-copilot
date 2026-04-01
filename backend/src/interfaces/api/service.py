@@ -12,9 +12,12 @@ Academic Copilot 服务层。
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import threading
 import uuid
 from datetime import datetime
+from time import perf_counter
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -24,6 +27,7 @@ from langchain_core.messages import BaseMessage, HumanMessage
 from src.application.runtime.config_registry import ConfigRegistry
 from src.application.runtime.runtime_engine import RuntimeEngine
 from src.infrastructure.memory import MemoryAdapter
+from src.infrastructure.memory.sqlite_store import SQLiteStore
 from src.infrastructure.tools.tool_manager import get_tool_manager
 from src.infrastructure.tools.loader import reload_tools
 
@@ -32,6 +36,8 @@ load_dotenv()
 _CONFIG_ROOT = Path(__file__).resolve().parents[3] / "config"
 _CONFIG_REGISTRY = ConfigRegistry(config_root=_CONFIG_ROOT)
 logger = logging.getLogger(__name__)
+_APP_LOCK = threading.Lock()
+_COPILOT_APP: Optional["AcademicCopilotApp"] = None
 
 
 def get_config_registry() -> ConfigRegistry:
@@ -45,6 +51,7 @@ def reload_runtime_config() -> Dict[str, Any]:
     return {
         "config_version": report["config_version"],
         "loaded": {
+            "llms": report.get("loaded_llms", []),
             "agents": report["loaded_agents"],
             "workflows": report["loaded_workflows"],
         },
@@ -67,17 +74,40 @@ async def reload_all_config() -> Dict[str, Any]:
 
 def validate_runtime_bindings() -> list[Dict[str, str]]:
     errors: list[Dict[str, str]] = []
-    enabled_tool_ids = get_tool_manager().get_catalog_tool_ids(enabled_only=True)
+    tool_manager = get_tool_manager()
+    known_llms = set(getattr(_CONFIG_REGISTRY, "llms", {}).keys())
 
     for agent_id, spec in _CONFIG_REGISTRY.agents.items():
+        llm_name = spec.llm.name
+        if isinstance(llm_name, str) and llm_name.strip():
+            if llm_name not in known_llms:
+                errors.append(
+                    {
+                        "type": "binding",
+                        "path": f"agent:{agent_id}",
+                        "error": f"Unknown llm.name: {llm_name}",
+                    }
+                )
+
+        if spec.mode == "chain" and spec.tools:
+            errors.append(
+                {
+                    "type": "binding",
+                    "path": f"agent:{agent_id}",
+                    "error": "chain mode does not support tools; set tools to [] or switch mode to react",
+                }
+            )
+
+        if spec.mode != "react":
+            continue
         for tool_id in spec.tools:
-            if tool_id in enabled_tool_ids:
+            if tool_manager.get_tool(tool_id) is not None:
                 continue
             errors.append(
                 {
                     "type": "binding",
                     "path": f"agent:{agent_id}",
-                    "error": f"Unknown or disabled tool_id: {tool_id}",
+                    "error": f"Unresolvable tool_id: {tool_id}",
                 }
             )
 
@@ -130,6 +160,13 @@ class AcademicCopilotApp:
         del recursion_limit  # 简化 runtime 不依赖递归配置
 
         sid = session_id or str(uuid.uuid4())
+        started = perf_counter()
+        _log_event(
+            "chat.turn.start",
+            session_id=sid,
+            user_id=user_id,
+            workflow_id=workflow_id,
+        )
         history_messages, memory_summary = self.memory.load_context(sid)
         state = self._build_state(
             user_message,
@@ -154,6 +191,14 @@ class AcademicCopilotApp:
 
         def _capture_step(step: Dict[str, Any]) -> None:
             captured_steps.append(step)
+            _log_event(
+                "chat.turn.step",
+                session_id=sid,
+                step_number=step.get("step_number"),
+                node_name=step.get("node_name"),
+                agent_id=step.get("agent_id"),
+                next_node=step.get("next_node"),
+            )
 
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
@@ -175,6 +220,15 @@ class AcademicCopilotApp:
             logger.warning("Memory pipeline failed (non-fatal): %s", exc)
 
         self._last_state = state
+        _log_event(
+            "chat.turn.complete",
+            session_id=sid,
+            success=bool(result.get("success")),
+            result_type=result.get("type"),
+            runtime_mode=state.get("runtime", {}).get("mode"),
+            step_count=state.get("runtime", {}).get("step_count"),
+            duration_ms=round((perf_counter() - started) * 1000, 2),
+        )
 
         if websocket_send:
             for step in captured_steps:
@@ -195,11 +249,24 @@ class AcademicCopilotApp:
 
     def health_check(self) -> Dict[str, Any]:
         try:
-            probe = self.runtime.health_probe()
+            runtime_probe = self.runtime.health_probe()
+            memory_probe = _memory_probe()
+            config_probe = {
+                "config_version": _CONFIG_REGISTRY.config_version,
+                "loaded_agents": len(_CONFIG_REGISTRY.agents),
+                "loaded_workflows": len(_CONFIG_REGISTRY.workflows),
+            }
+            runtime_ok = bool(runtime_probe.get("ok", False))
+            memory_ok = bool(memory_probe.get("ok", False))
+            healthy = runtime_ok and memory_ok
             return {
-                "status": "healthy",
-                "message": "Runtime configuration loaded.",
-                "probe": probe,
+                "status": "healthy" if healthy else "unhealthy",
+                "message": "Runtime probes collected.",
+                "probe": {
+                    "runtime": runtime_probe,
+                    "memory": memory_probe,
+                    "config": config_probe,
+                },
             }
         except Exception as e:
             return {"status": "unhealthy", "message": str(e)}
@@ -267,8 +334,26 @@ class AcademicCopilotApp:
 # ── 工厂函数 ─────────────────────────────────────────────────────────────────
 
 def create_copilot(model_type: str = "ollama") -> AcademicCopilotApp:
-    return AcademicCopilotApp(model_type=model_type)
+    global _COPILOT_APP
+    with _APP_LOCK:
+        if _COPILOT_APP is None or _COPILOT_APP.model_type != model_type:
+            _COPILOT_APP = AcademicCopilotApp(model_type=model_type)
+        return _COPILOT_APP
 
 
 def _ts() -> str:
     return datetime.now().isoformat()
+
+
+def _memory_probe() -> Dict[str, Any]:
+    try:
+        store = SQLiteStore()
+        del store
+        return {"ok": True}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def _log_event(event: str, **fields: Any) -> None:
+    payload = {"event": event, "timestamp": _ts(), **fields}
+    logger.info(json.dumps(payload, ensure_ascii=False, default=str))

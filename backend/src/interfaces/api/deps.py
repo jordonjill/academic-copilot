@@ -4,14 +4,17 @@ from fastapi import HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi import Depends
 
-ACCESS_KEY: str = os.getenv("ACCESS_KEY", "123")
 security = HTTPBearer()
+
+
+def _expected_access_key() -> str:
+    return os.getenv("ACCESS_KEY", "123")
 
 
 async def verify_access_key(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> str:
-    if credentials.credentials != ACCESS_KEY:
+    if credentials.credentials != _expected_access_key():
         raise HTTPException(
             status_code=401,
             detail="Invalid access key",

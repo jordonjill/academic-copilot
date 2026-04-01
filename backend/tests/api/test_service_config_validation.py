@@ -8,15 +8,15 @@ from src.interfaces.api import service
 
 class _FakeToolManager:
     def __init__(self, tool_ids: set[str]) -> None:
-        self._tool_ids = set(tool_ids)
+        self._tools = {tool_id: object() for tool_id in tool_ids}
 
-    def get_catalog_tool_ids(self, *, enabled_only: bool = True) -> set[str]:
-        del enabled_only
-        return set(self._tool_ids)
+    def get_tool(self, tool_id: str):
+        return self._tools.get(tool_id)
 
 
 class _FakeRegistry:
-    def __init__(self, agents, workflows) -> None:
+    def __init__(self, agents, workflows, llms=None) -> None:
+        self.llms = llms or {"openai_default": object()}
         self.agents = agents
         self.workflows = workflows
         self._version = 0
@@ -25,6 +25,7 @@ class _FakeRegistry:
         self._version += 1
         return {
             "config_version": self._version,
+            "loaded_llms": sorted(self.llms.keys()),
             "loaded_agents": sorted(self.agents.keys()),
             "loaded_workflows": sorted(self.workflows.keys()),
             "failed_objects": [],
@@ -39,17 +40,21 @@ def test_validate_runtime_bindings_detects_unknown_tool(monkeypatch):
             "mode": "react",
             "system_prompt": "x",
             "tools": ["missing_tool"],
-            "llm": {"provider": "openai", "model": "gpt-4o-mini"},
+            "llm": {"name": "openai_default"},
         }
     )
-    fake_registry = SimpleNamespace(agents={"researcher": agent}, workflows={})
+    fake_registry = SimpleNamespace(
+        llms={"openai_default": object()},
+        agents={"researcher": agent},
+        workflows={},
+    )
 
     monkeypatch.setattr(service, "_CONFIG_REGISTRY", fake_registry)
     monkeypatch.setattr(service, "get_tool_manager", lambda: _FakeToolManager({"web_search"}))
 
     errors = service.validate_runtime_bindings()
     assert errors
-    assert "Unknown or disabled tool_id: missing_tool" in errors[0]["error"]
+    assert "Unresolvable tool_id: missing_tool" in errors[0]["error"]
 
 
 def test_validate_runtime_bindings_detects_unknown_workflow_agent(monkeypatch):
@@ -66,7 +71,7 @@ def test_validate_runtime_bindings_detects_unknown_workflow_agent(monkeypatch):
             "limits": {"max_steps": 3},
         }
     )
-    fake_registry = SimpleNamespace(agents={}, workflows={"wf1": workflow})
+    fake_registry = SimpleNamespace(llms={}, agents={}, workflows={"wf1": workflow})
 
     monkeypatch.setattr(service, "_CONFIG_REGISTRY", fake_registry)
     monkeypatch.setattr(service, "get_tool_manager", lambda: _FakeToolManager(set()))
@@ -82,10 +87,10 @@ def test_reload_runtime_config_includes_binding_errors(monkeypatch):
         {
             "id": "writer",
             "name": "Writer",
-            "mode": "chain",
+            "mode": "react",
             "system_prompt": "x",
             "tools": ["missing_tool"],
-            "llm": {"provider": "openai", "model": "gpt-4o-mini"},
+            "llm": {"name": "openai_default"},
         }
     )
     fake_registry = _FakeRegistry(agents={"writer": agent}, workflows={})
@@ -96,4 +101,51 @@ def test_reload_runtime_config_includes_binding_errors(monkeypatch):
     report = service.reload_runtime_config()
     assert report["config_version"] == 1
     assert report["failed"]
-    assert "Unknown or disabled tool_id: missing_tool" in report["failed"][0]["error"]
+    assert "Unresolvable tool_id: missing_tool" in report["failed"][0]["error"]
+
+
+def test_validate_runtime_bindings_rejects_chain_mode_with_tools(monkeypatch):
+    agent = SimpleNamespace(
+        mode="chain",
+        tools=["missing_tool"],
+        llm=SimpleNamespace(name="openai_default"),
+    )
+    fake_registry = SimpleNamespace(
+        llms={"openai_default": object()},
+        agents={"writer": agent},
+        workflows={},
+    )
+
+    monkeypatch.setattr(service, "_CONFIG_REGISTRY", fake_registry)
+    monkeypatch.setattr(service, "get_tool_manager", lambda: _FakeToolManager(set()))
+
+    errors = service.validate_runtime_bindings()
+    assert errors
+    assert errors[0]["path"] == "agent:writer"
+    assert "chain mode does not support tools" in errors[0]["error"]
+
+
+def test_validate_runtime_bindings_detects_unknown_llm_name(monkeypatch):
+    agent = AgentSpec.model_validate(
+        {
+            "id": "writer",
+            "name": "Writer",
+            "mode": "chain",
+            "system_prompt": "x",
+            "tools": [],
+            "llm": {"name": "missing_llm"},
+        }
+    )
+    fake_registry = SimpleNamespace(
+        llms={"openai_default": object()},
+        agents={"writer": agent},
+        workflows={},
+    )
+
+    monkeypatch.setattr(service, "_CONFIG_REGISTRY", fake_registry)
+    monkeypatch.setattr(service, "get_tool_manager", lambda: _FakeToolManager(set()))
+
+    errors = service.validate_runtime_bindings()
+    assert errors
+    assert errors[0]["path"] == "agent:writer"
+    assert "Unknown llm.name: missing_llm" in errors[0]["error"]

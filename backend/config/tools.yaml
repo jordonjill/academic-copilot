@@ -1,12 +1,6 @@
 version: "1.0"
 
 servers:
-  filesystem:
-    transport: stdio
-    command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/jordon/papers"]
-    enabled: true
-
   zotero:
     transport: stdio
     command: "python"
@@ -41,8 +35,7 @@ tools:
     enabled: true
 
   filesystem:
-    transport: mcp
-    server: filesystem
-    # Optional. If omitted, ToolManager picks the first tool exposed by this server.
-    tool_name: ""
+    transport: internal
+    module: "src.infrastructure.tools.local_filesystem"
+    attribute: "filesystem"
     enabled: true

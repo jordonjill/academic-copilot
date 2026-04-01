@@ -21,11 +21,11 @@ def test_agent_spec_accepts_minimal_valid_payload():
             "name": "Planner Agent",
             "mode": "chain",
             "system_prompt": "You plan",
-            "llm": {"provider": "openai", "model": "gpt-4o-mini"},
+            "llm": {"name": "openai_default"},
         }
     )
     assert spec.tools == []
-    assert spec.llm.model == "gpt-4o-mini"
+    assert spec.llm.name == "openai_default"
 
 
 def test_workflow_spec_accepts_minimal_valid_payload():
@@ -64,7 +64,7 @@ def test_agent_spec_rejects_extra_top_level_fields():
                 "name": "Planner",
                 "mode": "chain",
                 "system_prompt": "plan",
-                "llm": {"provider": "openai", "model": "gpt-4o-mini"},
+                "llm": {"name": "openai_default"},
                 "extra": "not allowed",
             }
         )
@@ -81,11 +81,26 @@ def test_agent_spec_rejects_extra_fields_in_llm():
                 "mode": "react",
                 "system_prompt": "respond",
                 "llm": {
-                    "provider": "openai",
-                    "model": "gpt-4o-mini",
+                    "name": "openai_default",
                     "extra_llm": "not allowed",
                 },
             }
         )
     errors = exc.value.errors()
     assert any(error["loc"] == ("llm", "extra_llm") for error in errors)
+
+
+def test_agent_spec_rejects_chain_mode_with_tools():
+    with pytest.raises(ValidationError) as exc:
+        AgentSpec.model_validate(
+            {
+                "id": "planner",
+                "name": "Planner",
+                "mode": "chain",
+                "system_prompt": "plan",
+                "tools": ["web_search"],
+                "llm": {"name": "openai_default"},
+            }
+        )
+    errors = exc.value.errors()
+    assert any("chain mode does not support tools" in str(error.get("msg", "")) for error in errors)

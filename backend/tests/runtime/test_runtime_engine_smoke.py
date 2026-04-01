@@ -1,0 +1,174 @@
+from __future__ import annotations
+
+import json
+
+from langchain_core.messages import HumanMessage
+
+from src.application.runtime.config_registry import ConfigRegistry
+from src.application.runtime.runtime_engine import RuntimeEngine
+from src.application.runtime.spec_models import AgentSpec, WorkflowSpec
+
+
+class _FakeRunnable:
+    def __init__(self, fn):
+        self._fn = fn
+
+    def invoke(self, payload):
+        return self._fn(payload)
+
+
+def _state() -> dict:
+    return {
+        "input": {"user_text": "hello", "user_id": "u1", "session_id": "s1"},
+        "context": {"messages": [HumanMessage(content="hello")], "memory_summary": ""},
+        "runtime": {
+            "mode": "dynamic",
+            "workflow_id": None,
+            "current_node": None,
+            "step_count": 0,
+            "loop_count": 0,
+            "status": "idle",
+        },
+        "io": {"last_model_output": None, "last_tool_outputs": []},
+        "artifacts": {"topic": None, "shared": {}},
+        "output": {"final_text": None, "final_structured": None},
+        "errors": {"last_error": None},
+    }
+
+
+def _registry(tmp_path) -> ConfigRegistry:
+    reg = ConfigRegistry(config_root=tmp_path)
+    reg.agents = {
+        "supervisor": AgentSpec.model_validate(
+            {
+                "id": "supervisor",
+                "name": "Supervisor",
+                "mode": "chain",
+                "system_prompt": "supervisor",
+                "tools": [],
+                "llm": {"name": "openai_default"},
+            }
+        ),
+        "researcher": AgentSpec.model_validate(
+            {
+                "id": "researcher",
+                "name": "Researcher",
+                "mode": "chain",
+                "system_prompt": "researcher",
+                "tools": [],
+                "llm": {"name": "openai_default"},
+            }
+        ),
+        "reporter": AgentSpec.model_validate(
+            {
+                "id": "reporter",
+                "name": "Reporter",
+                "mode": "chain",
+                "system_prompt": "reporter",
+                "tools": [],
+                "llm": {"name": "openai_default"},
+            }
+        ),
+    }
+    reg.workflows = {
+        "wf1": WorkflowSpec.model_validate(
+            {
+                "id": "wf1",
+                "name": "wf1",
+                "entry_node": "reporter_node",
+                "nodes": {
+                    "reporter_node": {"type": "agent", "agent_id": "reporter"},
+                    "end": {"type": "terminal"},
+                },
+                "edges": [{"from": "reporter_node", "to": "end"}],
+                "limits": {"max_steps": 5, "max_loops": 2},
+            }
+        )
+    }
+    return reg
+
+
+def test_runtime_engine_supervisor_direct_reply(monkeypatch, tmp_path):
+    engine = RuntimeEngine(registry=_registry(tmp_path))
+    monkeypatch.setattr(engine, "_resolve_llm", lambda spec: object())
+
+    def _fake_build(spec, llm, tool_resolver):
+        del llm, tool_resolver
+        if spec.id == "supervisor":
+            return _FakeRunnable(
+                lambda payload: json.dumps({"action": "direct_reply", "message": "direct ok", "done": True})
+            )
+        raise AssertionError(f"Unexpected agent execution: {spec.id}")
+
+    monkeypatch.setattr("src.application.runtime.runtime_engine.build_agent_from_spec", _fake_build)
+
+    result = engine.run_turn(_state())
+    assert result["success"] is True
+    assert result["message"] == "direct ok"
+
+
+def test_runtime_engine_supervisor_runs_subagent_then_replies(monkeypatch, tmp_path):
+    engine = RuntimeEngine(registry=_registry(tmp_path))
+    monkeypatch.setattr(engine, "_resolve_llm", lambda spec: object())
+
+    decisions = iter(
+        [
+            {"action": "run_subagent", "target": "researcher", "done": False},
+            {"action": "direct_reply", "message": "done after subagent", "done": True},
+        ]
+    )
+    researcher_calls = {"count": 0}
+
+    def _fake_build(spec, llm, tool_resolver):
+        del llm, tool_resolver
+        if spec.id == "supervisor":
+            return _FakeRunnable(lambda payload: json.dumps(next(decisions)))
+        if spec.id == "researcher":
+            return _FakeRunnable(lambda payload: researcher_calls.__setitem__("count", researcher_calls["count"] + 1) or "research output")
+        raise AssertionError(f"Unexpected agent execution: {spec.id}")
+
+    monkeypatch.setattr("src.application.runtime.runtime_engine.build_agent_from_spec", _fake_build)
+
+    state = _state()
+    result = engine.run_turn(state)
+    assert result["success"] is True
+    assert result["message"] == "done after subagent"
+    assert researcher_calls["count"] == 1
+    assert state["runtime"]["step_count"] == 1
+
+
+def test_runtime_engine_supervisor_starts_workflow(monkeypatch, tmp_path):
+    engine = RuntimeEngine(registry=_registry(tmp_path))
+    monkeypatch.setattr(engine, "_resolve_llm", lambda spec: object())
+
+    supervisor_calls = {"count": 0}
+    reporter_calls = {"count": 0}
+
+    def _supervisor_reply(payload):
+        supervisor_calls["count"] += 1
+        if supervisor_calls["count"] == 1:
+            return json.dumps({"action": "start_workflow", "target": "wf1", "done": False})
+        return json.dumps({"action": "direct_reply", "message": "workflow finished", "done": True})
+
+    def _fake_build(spec, llm, tool_resolver):
+        del llm, tool_resolver
+        if spec.id == "supervisor":
+            return _FakeRunnable(_supervisor_reply)
+        if spec.id == "reporter":
+            def _invoke(payload):
+                del payload
+                reporter_calls["count"] += 1
+                return json.dumps({"final_text": "reporter output"})
+
+            return _FakeRunnable(_invoke)
+        raise AssertionError(f"Unexpected agent execution: {spec.id}")
+
+    monkeypatch.setattr("src.application.runtime.runtime_engine.build_agent_from_spec", _fake_build)
+
+    state = _state()
+    result = engine.run_turn(state)
+    assert result["success"] is True
+    assert result["message"] == "workflow finished"
+    assert reporter_calls["count"] == 1
+    assert state["runtime"]["mode"] == "workflow"
+    assert state["runtime"]["workflow_id"] == "wf1"

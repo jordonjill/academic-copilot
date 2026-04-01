@@ -29,9 +29,6 @@ system_prompt: |
       "references": [{"title":"string","uri":"string"}]
     }
   }
-tools:
-  - filesystem
+tools: []
 llm:
-  provider: openai
-  model: gpt-4o-mini
-  temperature: 0.0
+  name: openai_default
