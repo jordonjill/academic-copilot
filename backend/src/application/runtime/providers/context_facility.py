@@ -6,7 +6,7 @@ from typing import Any, Iterable, Literal
 
 from langchain_core.messages import BaseMessage
 
-from src.application.runtime.env_utils import read_env_int
+from src.application.runtime.utils.env_utils import read_env_int
 
 
 _ContextScope = Literal["default", "supervisor"]

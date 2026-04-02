@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from src.application.runtime.context_facility import ContextFacility, ContextPolicy
+from src.application.runtime.providers.context_facility import ContextFacility, ContextPolicy
 
 
 def test_messages_to_text_uses_scope_windows():

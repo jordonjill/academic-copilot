@@ -5,9 +5,10 @@ from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-_RESERVED_LIMIT_KEYS = {"max_steps", "max_loops", "timeout_ms"}
+_RESERVED_LIMIT_KEYS = {"max_steps", "max_loops"}
 _NODE_VISIT_PREFIX = "max_visits_"
 _GENERIC_MAX_PREFIX = "max_"
+_DEFAULT_DERIVED_MAX_STEPS = 30
 
 
 class LLMConfig(BaseModel):
@@ -91,16 +92,33 @@ class WorkflowSpec(BaseModel):
     def node_visit_limits(self) -> Dict[str, int]:
         return self._extract_node_visit_limits()
 
+    def resolved_max_steps(self) -> int:
+        if "max_steps" in self.limits:
+            return int(self.limits.get("max_steps", _DEFAULT_DERIVED_MAX_STEPS))
+
+        min_steps_to_terminal = self._min_steps_to_terminal()
+        node_limits_sum = sum(self._extract_node_visit_limits().values())
+        if min_steps_to_terminal is None:
+            return max(1, _DEFAULT_DERIVED_MAX_STEPS, node_limits_sum)
+        max_loops = self.resolved_max_loops(max_steps=max(1, min_steps_to_terminal))
+        per_loop_budget = self._max_loop_cycle_agent_steps()
+        derived = min_steps_to_terminal + (max_loops * per_loop_budget)
+        return max(1, derived, node_limits_sum)
+
+    def resolved_max_loops(self, *, max_steps: Optional[int] = None) -> int:
+        if "max_loops" in self.limits:
+            return int(self.limits.get("max_loops", 6))
+        resolved_steps = max_steps if max_steps is not None else self.resolved_max_steps()
+        return min(6, max(1, int(resolved_steps)))
+
     def _validate_limits(self) -> None:
-        max_steps = int(self.limits.get("max_steps", 30))
+        max_steps_explicit = "max_steps" in self.limits
+        max_steps = self.resolved_max_steps()
         if max_steps < 1:
             raise ValueError("limits.max_steps must be >= 1")
 
         max_loops_explicit = "max_loops" in self.limits
-        if max_loops_explicit:
-            max_loops = int(self.limits.get("max_loops", 6))
-        else:
-            max_loops = min(6, max_steps)
+        max_loops = self.resolved_max_loops(max_steps=max_steps)
         if max_loops < 0:
             raise ValueError("limits.max_loops must be >= 0")
         if max_loops > max_steps:
@@ -127,13 +145,18 @@ class WorkflowSpec(BaseModel):
                 f"(required>={min_steps_to_terminal}, got={max_steps})"
             )
         if (
-            max_loops_explicit
+            max_steps_explicit
+            and max_loops_explicit
             and min_steps_to_terminal is not None
-            and (min_steps_to_terminal + max_loops) > max_steps
+            and (
+                min_steps_to_terminal + (max_loops * self._max_loop_cycle_agent_steps())
+            ) > max_steps
         ):
+            required = min_steps_to_terminal + (max_loops * self._max_loop_cycle_agent_steps())
             raise ValueError(
-                "limits are inconsistent: max_steps must cover baseline path plus max_loops "
-                f"(required>={min_steps_to_terminal + max_loops}, got={max_steps})"
+                "limits are inconsistent: max_steps must cover baseline path plus "
+                "max_loops * per-loop cycle budget "
+                f"(required>={required}, got={max_steps})"
             )
 
     def _extract_node_visit_limits(self) -> Dict[str, int]:
@@ -204,6 +227,89 @@ class WorkflowSpec(BaseModel):
         if not reachable_costs:
             return None
         return min(reachable_costs)
+
+    def _max_loop_cycle_agent_steps(self) -> int:
+        edge_map: Dict[str, list[str]] = {}
+        for edge in self.edges:
+            source = str(edge["from"])
+            target = str(edge["to"])
+            edge_map.setdefault(source, []).append(target)
+
+        reachable = self._reachable_from_entry(edge_map)
+        terminal_reachable = self._nodes_reaching_terminal(edge_map)
+
+        max_cycle_budget = 1
+        for edge in self.edges:
+            source = str(edge["from"])
+            target = str(edge["to"])
+            if source not in reachable or target not in reachable:
+                continue
+            if source not in terminal_reachable:
+                continue
+            cycle_cost = self._shortest_agent_steps_between(
+                start_node=target,
+                target_node=source,
+                edge_map=edge_map,
+            )
+            if cycle_cost is None:
+                continue
+            max_cycle_budget = max(max_cycle_budget, max(1, cycle_cost))
+        return max_cycle_budget
+
+    def _shortest_agent_steps_between(
+        self,
+        *,
+        start_node: str,
+        target_node: str,
+        edge_map: Dict[str, list[str]],
+    ) -> Optional[int]:
+        start_cost = 1 if self._is_agent_node(start_node) else 0
+        distances: Dict[str, int] = {start_node: start_cost}
+        heap: list[tuple[int, str]] = [(start_cost, start_node)]
+
+        while heap:
+            cost, node = heapq.heappop(heap)
+            if cost != distances.get(node):
+                continue
+            if node == target_node:
+                return cost
+            for nxt in edge_map.get(node, []):
+                next_cost = cost + (1 if self._is_agent_node(nxt) else 0)
+                if next_cost < distances.get(nxt, 10**9):
+                    distances[nxt] = next_cost
+                    heapq.heappush(heap, (next_cost, nxt))
+        return None
+
+    def _reachable_from_entry(self, edge_map: Dict[str, list[str]]) -> set[str]:
+        stack = [self.entry_node]
+        seen: set[str] = set()
+        while stack:
+            node = stack.pop()
+            if node in seen:
+                continue
+            seen.add(node)
+            stack.extend(edge_map.get(node, []))
+        return seen
+
+    def _nodes_reaching_terminal(self, edge_map: Dict[str, list[str]]) -> set[str]:
+        reverse_map: Dict[str, list[str]] = {}
+        for src, targets in edge_map.items():
+            for dst in targets:
+                reverse_map.setdefault(dst, []).append(src)
+        terminal_nodes = [
+            name
+            for name, spec in self.nodes.items()
+            if isinstance(spec, dict) and spec.get("type") == "terminal"
+        ]
+        stack = list(terminal_nodes)
+        seen: set[str] = set()
+        while stack:
+            node = stack.pop()
+            if node in seen:
+                continue
+            seen.add(node)
+            stack.extend(reverse_map.get(node, []))
+        return seen
 
     def _is_agent_node(self, node_name: str) -> bool:
         node = self.nodes.get(node_name)

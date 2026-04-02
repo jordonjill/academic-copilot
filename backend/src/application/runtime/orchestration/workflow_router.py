@@ -5,7 +5,7 @@ import logging
 import re
 from typing import Any
 
-from src.application.runtime.spec_models import WorkflowSpec
+from src.application.runtime.contracts.spec_models import WorkflowSpec
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +59,8 @@ class WorkflowRuntime:
         return edges[0]["to"]
 
     def enforce_limits(self, state: dict[str, Any]) -> None:
-        max_steps = int(self.spec.limits.get("max_steps", 30))
-        max_loops = self._resolved_max_loops(max_steps)
+        max_steps = self.spec.resolved_max_steps()
+        max_loops = self.spec.resolved_max_loops(max_steps=max_steps)
         if state.get("_step_count", 0) >= max_steps:
             raise RuntimeError("max_steps exceeded")
         if state.get("_loop_count", 0) >= max_loops:
@@ -85,8 +85,8 @@ class WorkflowRuntime:
         return fallback["to"]
 
     def _loop_saturated(self, state: dict[str, Any]) -> bool:
-        max_steps = int(self.spec.limits.get("max_steps", 30))
-        max_loops = self._resolved_max_loops(max_steps)
+        max_steps = self.spec.resolved_max_steps()
+        max_loops = self.spec.resolved_max_loops(max_steps=max_steps)
         if max_loops < 0:
             return False
         loop_count = state.get("_loop_count")
@@ -97,11 +97,6 @@ class WorkflowRuntime:
         if not isinstance(loop_count, int):
             return False
         return loop_count >= max_loops
-
-    def _resolved_max_loops(self, max_steps: int) -> int:
-        if "max_loops" in self.spec.limits:
-            return int(self.spec.limits.get("max_loops", 6))
-        return min(6, max_steps)
 
     @staticmethod
     def _preferred_fallback_edge(

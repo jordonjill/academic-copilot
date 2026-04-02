@@ -10,7 +10,7 @@ from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langgraph.prebuilt import create_react_agent
 
-from src.application.runtime.spec_models import AgentSpec
+from src.application.runtime.contracts.spec_models import AgentSpec
 
 ToolResolver = Callable[[str], Optional[BaseTool]]
 
@@ -68,7 +68,8 @@ def build_agent_from_spec(
             except Exception as exc:
                 raise ValueError(f"Failed to resolve tool: {tool_id}") from exc
             if tool is None:
-                raise ValueError(f"Tool resolver returned None for: {tool_id}")
+                # Runtime may hide budget-exhausted tools from the current execution.
+                continue
             tools.append(tool)
 
     return create_subagent(

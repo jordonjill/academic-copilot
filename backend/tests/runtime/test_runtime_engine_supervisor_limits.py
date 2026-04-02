@@ -4,9 +4,9 @@ import json
 
 from langchain_core.messages import HumanMessage
 
-from src.application.runtime.config_registry import ConfigRegistry
+from src.application.runtime.config.config_registry import ConfigRegistry
 from src.application.runtime.runtime_engine import RuntimeEngine
-from src.application.runtime.spec_models import AgentSpec
+from src.application.runtime.contracts.spec_models import AgentSpec
 
 
 class _FakeRunnable:

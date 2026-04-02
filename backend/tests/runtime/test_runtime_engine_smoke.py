@@ -5,10 +5,11 @@ import json
 import pytest
 
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.tools import tool
 
-from src.application.runtime.config_registry import ConfigRegistry
+from src.application.runtime.config.config_registry import ConfigRegistry
 from src.application.runtime.runtime_engine import RuntimeEngine
-from src.application.runtime.spec_models import AgentSpec, WorkflowSpec
+from src.application.runtime.contracts.spec_models import AgentSpec, WorkflowSpec
 
 
 class _FakeRunnable:
@@ -578,3 +579,254 @@ def test_run_turn_async_awaits_async_step_callback(monkeypatch, tmp_path):
     result = asyncio.run(engine.run_turn_async(_state(), requested_workflow_id="wf1", step_callback=_step_callback))
     assert result["success"] is True
     assert callback_calls["count"] == 1
+
+
+def test_workflow_tool_budget_enforces_max_tool_limit(monkeypatch, tmp_path):
+    registry = ConfigRegistry(config_root=tmp_path)
+    registry.agents = {
+        "supervisor": AgentSpec.model_validate(
+            {
+                "id": "supervisor",
+                "name": "Supervisor",
+                "mode": "react",
+                "system_prompt": "supervisor",
+                "tools": [],
+                "llm": {"name": "openai_default"},
+            }
+        ),
+        "searcher": AgentSpec.model_validate(
+            {
+                "id": "searcher",
+                "name": "Searcher",
+                "mode": "react",
+                "system_prompt": "search",
+                "tools": ["scholar_search"],
+                "llm": {"name": "openai_default"},
+            }
+        ),
+    }
+    registry.workflows = {
+        "wf_budget": WorkflowSpec.model_validate(
+            {
+                "id": "wf_budget",
+                "name": "wf_budget",
+                "entry_node": "search",
+                "nodes": {
+                    "search": {"type": "agent", "agent_id": "searcher"},
+                    "end": {"type": "terminal"},
+                },
+                "edges": [{"from": "search", "to": "end"}],
+                "limits": {"max_steps": 5, "max_loops": 2, "max_tool_scholar_search": 1},
+            }
+        )
+    }
+
+    engine = RuntimeEngine(registry=registry)
+    monkeypatch.setattr(engine, "_resolve_llm", lambda spec: object())
+
+    @tool
+    def scholar_search(query: str, max_results: int = 12, include_web: bool = True) -> dict:
+        """Fake scholar search tool for runtime budget testing."""
+        del query, max_results, include_web
+        return {"ok": True, "source": "fake"}
+
+    monkeypatch.setattr(
+        "src.application.runtime.runtime_engine.get_tool",
+        lambda tool_id: scholar_search if tool_id == "scholar_search" else None,
+    )
+
+    tool_results: list[dict] = []
+
+    def _fake_build(spec, llm, tool_resolver):
+        del llm
+        if spec.id != "searcher":
+            raise AssertionError(f"Unexpected spec id: {spec.id}")
+
+        def _invoke(payload):
+            tool_impl = tool_resolver("scholar_search")
+            tool_results.append(tool_impl.invoke({"query": "q1", "max_results": 2, "include_web": False}))
+            tool_results.append(tool_impl.invoke({"query": "q2", "max_results": 2, "include_web": False}))
+            return {"messages": payload["messages"] + [AIMessage(content='{"final_text":"ok"}')]}
+
+        return _FakeRunnable(_invoke)
+
+    monkeypatch.setattr("src.application.runtime.runtime_engine.build_agent_from_spec", _fake_build)
+
+    state = _state()
+    result = engine.run_turn(state, requested_workflow_id="wf_budget")
+    assert result["success"] is True
+    assert result["message"] == "ok"
+
+    assert tool_results[0].get("ok") is True
+    assert tool_results[1].get("ok") is False
+    assert tool_results[1].get("error_code") == "TOOL_BUDGET_EXCEEDED"
+    assert state["runtime"]["tool_budget"]["counts"]["scholar_search"] == 1
+
+
+def test_direct_subagent_turn_tool_budget_enforces_limit(monkeypatch, tmp_path):
+    registry = ConfigRegistry(config_root=tmp_path)
+    registry.agents = {
+        "supervisor": AgentSpec.model_validate(
+            {
+                "id": "supervisor",
+                "name": "Supervisor",
+                "mode": "chain",
+                "system_prompt": "supervisor",
+                "tools": [],
+                "llm": {"name": "openai_default"},
+            }
+        ),
+        "searcher": AgentSpec.model_validate(
+            {
+                "id": "searcher",
+                "name": "Searcher",
+                "mode": "react",
+                "system_prompt": "search",
+                "tools": ["scholar_search"],
+                "llm": {"name": "openai_default"},
+            }
+        ),
+    }
+    registry.workflows = {}
+
+    engine = RuntimeEngine(registry=registry)
+    monkeypatch.setattr(engine, "_resolve_llm", lambda spec: object())
+
+    @tool
+    def scholar_search(query: str, max_results: int = 12, include_web: bool = True) -> dict:
+        """Fake scholar search tool for direct subagent turn budget testing."""
+        del query, max_results, include_web
+        return {"ok": True, "source": "fake"}
+
+    monkeypatch.setattr(
+        "src.application.runtime.runtime_engine.get_tool",
+        lambda tool_id: scholar_search if tool_id == "scholar_search" else None,
+    )
+
+    decisions = iter(
+        [
+            {
+                "action": "run_subagent",
+                "target": "searcher",
+                "instruction": "find evidence",
+                "done": False,
+            },
+            {"action": "direct_reply", "message": "done", "done": True},
+        ]
+    )
+    tool_results: list[dict] = []
+
+    def _fake_build(spec, llm, tool_resolver):
+        del llm
+        if spec.id == "supervisor":
+            return _FakeRunnable(lambda payload: json.dumps(next(decisions)))
+        if spec.id == "searcher":
+            def _invoke(payload):
+                tool_impl = tool_resolver("scholar_search")
+                tool_results.append(tool_impl.invoke({"query": "q1"}))
+                tool_results.append(tool_impl.invoke({"query": "q2"}))
+                tool_results.append(tool_impl.invoke({"query": "q3"}))
+                return {"messages": payload["messages"] + [AIMessage(content='{"final_text":"ok"}')]}
+
+            return _FakeRunnable(_invoke)
+        raise AssertionError(f"Unexpected spec id: {spec.id}")
+
+    monkeypatch.setattr("src.application.runtime.runtime_engine.build_agent_from_spec", _fake_build)
+
+    state = _state()
+    result = engine.run_turn(state)
+    assert result["success"] is True
+    assert result["message"] == "done"
+
+    assert tool_results[0].get("ok") is True
+    assert tool_results[1].get("ok") is True
+    assert tool_results[2].get("ok") is False
+    assert tool_results[2].get("error_code") == "TOOL_BUDGET_EXCEEDED"
+    assert state["runtime"]["tool_budget"]["scope"] == "turn"
+    assert state["runtime"]["tool_budget"]["counts"]["scholar_search"] == 2
+
+
+def test_workflow_tool_budget_enforces_per_visit_node_limit(monkeypatch, tmp_path):
+    registry = ConfigRegistry(config_root=tmp_path)
+    registry.agents = {
+        "supervisor": AgentSpec.model_validate(
+            {
+                "id": "supervisor",
+                "name": "Supervisor",
+                "mode": "react",
+                "system_prompt": "supervisor",
+                "tools": [],
+                "llm": {"name": "openai_default"},
+            }
+        ),
+        "searcher": AgentSpec.model_validate(
+            {
+                "id": "searcher",
+                "name": "Searcher",
+                "mode": "react",
+                "system_prompt": "search",
+                "tools": ["scholar_search"],
+                "llm": {"name": "openai_default"},
+            }
+        ),
+    }
+    registry.workflows = {
+        "wf_node_budget": WorkflowSpec.model_validate(
+            {
+                "id": "wf_node_budget",
+                "name": "wf_node_budget",
+                "entry_node": "search",
+                "nodes": {
+                    "search": {"type": "agent", "agent_id": "searcher"},
+                    "end": {"type": "terminal"},
+                },
+                "edges": [{"from": "search", "to": "end"}],
+                "limits": {
+                    "max_steps": 5,
+                    "max_loops": 2,
+                    "max_node_tool_search__scholar_search": 1,
+                },
+            }
+        )
+    }
+
+    engine = RuntimeEngine(registry=registry)
+    monkeypatch.setattr(engine, "_resolve_llm", lambda spec: object())
+
+    @tool
+    def scholar_search(query: str, max_results: int = 12, include_web: bool = True) -> dict:
+        """Fake scholar search tool for per-visit budget testing."""
+        del query, max_results, include_web
+        return {"ok": True, "source": "fake"}
+
+    monkeypatch.setattr(
+        "src.application.runtime.runtime_engine.get_tool",
+        lambda tool_id: scholar_search if tool_id == "scholar_search" else None,
+    )
+
+    tool_results: list[dict] = []
+
+    def _fake_build(spec, llm, tool_resolver):
+        del llm
+        if spec.id != "searcher":
+            raise AssertionError(f"Unexpected spec id: {spec.id}")
+
+        def _invoke(payload):
+            tool_impl = tool_resolver("scholar_search")
+            tool_results.append(tool_impl.invoke({"query": "q1"}))
+            tool_results.append(tool_impl.invoke({"query": "q2"}))
+            return {"messages": payload["messages"] + [AIMessage(content='{"final_text":"ok"}')]}
+
+        return _FakeRunnable(_invoke)
+
+    monkeypatch.setattr("src.application.runtime.runtime_engine.build_agent_from_spec", _fake_build)
+
+    state = _state()
+    result = engine.run_turn(state, requested_workflow_id="wf_node_budget")
+    assert result["success"] is True
+    assert result["message"] == "ok"
+
+    assert tool_results[0].get("ok") is True
+    assert tool_results[1].get("ok") is False
+    assert tool_results[1].get("error_code") == "NODE_TOOL_BUDGET_EXCEEDED"
+    assert state["runtime"]["tool_budget"]["counts"]["scholar_search"] == 1

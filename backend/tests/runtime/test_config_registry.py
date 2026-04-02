@@ -1,8 +1,8 @@
 import pytest
 
-from src.application.runtime import hook_registry
-from src.application.runtime.config_registry import ConfigRegistry
-from src.application.runtime.hook_registry import HOOK_REGISTRY, register_hook, resolve_hook
+from src.application.runtime.config import hook_registry
+from src.application.runtime.config.config_registry import ConfigRegistry
+from src.application.runtime.config.hook_registry import HOOK_REGISTRY, register_hook, resolve_hook
 
 
 def test_unknown_hook_rejected():

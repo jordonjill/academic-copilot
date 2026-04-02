@@ -83,3 +83,28 @@ def test_load_ltm_profile_for_supervisor_respects_prompt_cap(monkeypatch):
 def test_load_ltm_profile_for_supervisor_returns_empty_when_disabled(monkeypatch):
     monkeypatch.setattr(ltm_module, "MEMORY_PIPELINE_ENABLED", False)
     assert ltm_module.load_ltm_profile_for_supervisor("u1") == ""
+
+
+def test_merge_profiles_semantic_dedup_and_delta():
+    existing = {
+        "research_domains": [],
+        "methodologies": [],
+        "tools_and_frameworks": [],
+        "past_topics": [],
+        "writing_preferences": [],
+        "custom_facts": [
+            "requires experiments to include ablation studies, significance tests, error analysis, and failure case discussion",
+        ],
+    }
+    new_facts = {
+        "custom_facts": [
+            "User requires experiments to include ablation studies, significance tests, error analysis and failure-case discussion.",
+            "needs bilingual abstract",
+        ]
+    }
+
+    merged, delta = ltm_module._merge_profiles_with_delta(existing, new_facts)
+    assert len(merged["custom_facts"]) == 2
+    assert any("bilingual abstract" in item for item in merged["custom_facts"])
+    # Near-duplicate long sentence should not be added as a separate third item.
+    assert len(delta["custom_facts"]) <= 2

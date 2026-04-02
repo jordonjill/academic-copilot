@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, List, Protocol, TypeVar
 import yaml
 from pydantic import ValidationError
 
-from src.application.runtime.spec_models import AgentSpec, LLMProfileSpec, WorkflowSpec
+from src.application.runtime.contracts.spec_models import AgentSpec, LLMProfileSpec, WorkflowSpec
 
 
 class _HasId(Protocol):

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.application.runtime.spec_models import AgentSpec, WorkflowSpec
+from src.application.runtime.contracts.spec_models import AgentSpec, WorkflowSpec
 from src.interfaces.api import service
 
 

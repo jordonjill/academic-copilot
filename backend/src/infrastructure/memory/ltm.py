@@ -56,6 +56,9 @@ _TRIM_PRIORITY = (
     "research_domains",
     "writing_preferences",
 )
+_SIMILARITY_JACCARD_THRESHOLD = 0.82
+_SIMILARITY_MIN_TOKEN_COUNT = 4
+_SIMILARITY_MIN_SUBSTRING_CHARS = 18
 
 
 def _ltm_max_workers() -> int:
@@ -132,8 +135,22 @@ def _load_existing_profile(user_id: str) -> Dict[str, List[str]]:
 
 
 def _merge_profiles(existing: Dict[str, List[str]], new_facts: Dict[str, List[str]]) -> Dict[str, List[str]]:
-    """Union 去重追加，按每类上限保留最近条目。"""
+    """Merge new facts into existing profile with semantic de-duplication and caps."""
+    merged, _ = _merge_profiles_with_delta(existing, new_facts)
+    return merged
+
+
+def _merge_profiles_with_delta(
+    existing: Dict[str, List[str]],
+    new_facts: Dict[str, List[str]],
+) -> tuple[Dict[str, List[str]], Dict[str, List[str]]]:
+    """
+    Merge with semantic de-duplication and return delta facts that were newly added/updated.
+
+    Delta is used to avoid repeatedly writing near-duplicate facts into SQLite.
+    """
     merged: Dict[str, List[str]] = _empty_profile()
+    delta: Dict[str, List[str]] = _empty_profile()
     for key in _PROFILE_KEYS:
         existing_items = existing.get(key, [])
         new_items = new_facts.get(key, [])
@@ -141,11 +158,14 @@ def _merge_profiles(existing: Dict[str, List[str]], new_facts: Dict[str, List[st
             existing_items = []
         if not isinstance(new_items, list):
             new_items = []
-        merged[key] = _normalize_items(
-            [*existing_items, *new_items],
+        merged_items, delta_items = _merge_item_lists(
+            existing_items,
+            new_items,
             max_items=_category_cap(key),
         )
-    return merged
+        merged[key] = merged_items
+        delta[key] = delta_items
+    return merged, delta
 
 
 def _write_memory_md(user_id: str, profile: Dict[str, List[str]]) -> str:
@@ -235,13 +255,13 @@ async def extract_and_update_ltm(
 
         # 合并 + 写入 memory.md
         existing = _load_existing_profile(user_id)
-        merged = _merge_profiles(existing, new_facts)
+        merged, delta = _merge_profiles_with_delta(existing, new_facts)
         _write_memory_md(user_id, merged)
 
         # 写入 SQLite
         from src.infrastructure.memory.sqlite_store import SQLiteStore
         store = SQLiteStore()
-        for fact_type, items in new_facts.items():
+        for fact_type, items in delta.items():
             for item in items:
                 if item.strip():
                     store.save_ltm_fact(user_id, session_id, fact_type, item)
@@ -287,6 +307,114 @@ def _normalize_items(items: List[Any], *, max_items: int) -> List[str]:
     if len(normalized) > max_items:
         normalized = normalized[-max_items:]
     return normalized
+
+
+def _semantic_key(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", text.casefold())
+
+
+def _tokenize_for_similarity(text: str) -> set[str]:
+    return {token for token in re.findall(r"[a-z0-9]+", text.casefold()) if len(token) >= 2}
+
+
+def _is_semantic_duplicate(a: str, b: str) -> bool:
+    if not a or not b:
+        return False
+    if a.casefold() == b.casefold():
+        return True
+
+    key_a = _semantic_key(a)
+    key_b = _semantic_key(b)
+    if key_a and key_a == key_b:
+        return True
+
+    lower_a = a.casefold()
+    lower_b = b.casefold()
+    if len(lower_a) <= len(lower_b):
+        shorter, longer = lower_a, lower_b
+    else:
+        shorter, longer = lower_b, lower_a
+    if len(shorter) >= _SIMILARITY_MIN_SUBSTRING_CHARS and shorter in longer:
+        return True
+
+    tokens_a = _tokenize_for_similarity(a)
+    tokens_b = _tokenize_for_similarity(b)
+    if min(len(tokens_a), len(tokens_b)) < _SIMILARITY_MIN_TOKEN_COUNT:
+        return False
+    union = tokens_a | tokens_b
+    if not union:
+        return False
+    jaccard = len(tokens_a & tokens_b) / float(len(union))
+    return jaccard >= _SIMILARITY_JACCARD_THRESHOLD
+
+
+def _find_semantic_match(items: list[str], candidate: str) -> int | None:
+    for idx, existing in enumerate(items):
+        if _is_semantic_duplicate(existing, candidate):
+            return idx
+    return None
+
+
+def _prefer_richer_text(old_text: str, new_text: str) -> str:
+    if old_text.casefold() == new_text.casefold():
+        return old_text
+    old_tokens = _tokenize_for_similarity(old_text)
+    new_tokens = _tokenize_for_similarity(new_text)
+    old_score = len(old_text) + (6 * len(old_tokens))
+    new_score = len(new_text) + (6 * len(new_tokens))
+    if new_score > old_score:
+        return new_text
+    if new_score == old_score and len(new_text) >= len(old_text):
+        return new_text
+    return old_text
+
+
+def _semantic_dedupe_preserve_order(items: list[str]) -> list[str]:
+    deduped: list[str] = []
+    for item in items:
+        if _find_semantic_match(deduped, item) is None:
+            deduped.append(item)
+            continue
+        match_idx = _find_semantic_match(deduped, item)
+        if match_idx is not None:
+            deduped[match_idx] = _prefer_richer_text(deduped[match_idx], item)
+    return deduped
+
+
+def _merge_item_lists(
+    existing_items: list[Any],
+    new_items: list[Any],
+    *,
+    max_items: int,
+) -> tuple[list[str], list[str]]:
+    baseline = _normalize_items(existing_items, max_items=max(1, max_items * 4))
+    merged = list(_semantic_dedupe_preserve_order(baseline))
+    delta: list[str] = []
+
+    for raw in new_items:
+        candidate = _normalize_fact_text(raw)
+        if not candidate:
+            continue
+        match_idx = _find_semantic_match(merged, candidate)
+        if match_idx is None:
+            merged.append(candidate)
+            delta.append(candidate)
+            continue
+        improved = _prefer_richer_text(merged[match_idx], candidate)
+        if improved != merged[match_idx]:
+            merged[match_idx] = improved
+            delta.append(improved)
+
+    merged = _semantic_dedupe_preserve_order(merged)
+    if len(merged) > max_items:
+        merged = merged[-max_items:]
+
+    # Keep delta compact and only facts represented in final merged profile.
+    compact_delta: list[str] = []
+    for item in _semantic_dedupe_preserve_order(delta):
+        if _find_semantic_match(merged, item) is not None:
+            compact_delta.append(item)
+    return merged, compact_delta
 
 
 def _normalize_profile(profile: Dict[str, Any]) -> Dict[str, List[str]]:

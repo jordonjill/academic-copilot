@@ -6,9 +6,9 @@ import time
 
 import pytest
 
-from src.application.runtime.config_registry import ConfigRegistry
+from src.application.runtime.config.config_registry import ConfigRegistry
 from src.application.runtime.runtime_engine import RuntimeEngine
-from src.application.runtime.spec_models import AgentSpec, LLMProfileSpec
+from src.application.runtime.contracts.spec_models import AgentSpec, LLMProfileSpec
 
 
 def test_resolve_llm_rejects_unresolved_base_url_placeholder(tmp_path):

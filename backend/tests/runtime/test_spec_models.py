@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from src.application.runtime.spec_models import AgentSpec, WorkflowSpec
+from src.application.runtime.contracts.spec_models import AgentSpec, WorkflowSpec
 
 
 def test_agent_spec_requires_core_fields():

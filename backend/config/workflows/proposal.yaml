@@ -69,7 +69,6 @@ edges:
       field: artifacts.quality_report.decision
       equals: revise_writing
 limits:
-  max_steps: 30
-  max_loops: 8
-  max_search: 4
-  timeout_ms: 900000
+  max_loops: 3
+  max_node_tool_search__scholar_search: 1
+  max_node_tool_read__paper_fetch: 2

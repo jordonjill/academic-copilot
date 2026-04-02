@@ -1,13 +1,44 @@
 from __future__ import annotations
 
+import atexit
+import logging
 import os
 import re
+import threading
+import time
+import xml.etree.ElementTree as ET
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import requests
 from langchain_core.tools import tool
+
+logger = logging.getLogger(__name__)
+
+_ARXIV_COOLDOWN_LOCK = threading.Lock()
+_ARXIV_COOLDOWN_UNTIL = 0.0
+_SCHOLAR_MAX_WORKERS = 4
+_SCHOLAR_SOURCE_TIMEOUT_SECONDS = 8.0
+_ARXIV_CLIENT_NUM_RETRIES = 0
+_ARXIV_CLIENT_DELAY_SECONDS = 0.2
+_ARXIV_CLIENT_PAGE_SIZE = 8
+_ARXIV_RATE_LIMIT_COOLDOWN_SECONDS = 300.0
+_PAPER_FETCH_DEFAULT_TIMEOUT_SECONDS = 10
+
+
+_SCHOLAR_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_SCHOLAR_MAX_WORKERS,
+    thread_name_prefix="scholar-search",
+)
+
+
+def _shutdown_scholar_executor() -> None:
+    _SCHOLAR_EXECUTOR.shutdown(wait=False, cancel_futures=True)
+
+
+atexit.register(_shutdown_scholar_executor)
 
 
 def _tool_error(code: str, message: str) -> dict[str, Any]:
@@ -63,75 +94,242 @@ def _normalize_uris(seed_uris: list[str] | str) -> list[str]:
     return result
 
 
-@tool
-def scholar_search(query: str, max_results: int = 12, include_web: bool = True) -> list[dict[str, Any]]:
-    """Unified academic search over arXiv and optional web fallback."""
-    limit = max(1, min(int(max_results), 30))
+def _arxiv_rate_limited() -> bool:
+    with _ARXIV_COOLDOWN_LOCK:
+        return time.monotonic() < _ARXIV_COOLDOWN_UNTIL
+
+
+def _mark_arxiv_cooldown() -> None:
+    with _ARXIV_COOLDOWN_LOCK:
+        global _ARXIV_COOLDOWN_UNTIL
+        _ARXIV_COOLDOWN_UNTIL = time.monotonic() + _ARXIV_RATE_LIMIT_COOLDOWN_SECONDS
+
+
+def _is_arxiv_rate_limit_error(exc: Exception) -> bool:
+    text = repr(exc).lower()
+    return "429" in text or "too many requests" in text or "rate limit" in text
+
+
+def _dedupe_and_take(items: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     seen_uri: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        uri = str(item.get("uri") or "").strip()
+        if not uri or uri in seen_uri:
+            continue
+        seen_uri.add(uri)
+        merged.append(item)
+        if len(merged) >= limit:
+            break
+    return merged
 
-    # arXiv primary search
+
+def _extract_arxiv_id(target: str) -> str:
+    text = (target or "").strip()
+    if not text:
+        return ""
+    m = re.search(r"arxiv\.org/(?:abs|pdf)/([^/?#]+)", text, flags=re.I)
+    if not m:
+        return ""
+    return m.group(1).replace(".pdf", "").strip()
+
+
+def _fetch_arxiv_entry_via_api(arxiv_id: str, timeout_seconds: int, max_chars: int) -> dict[str, Any]:
+    if _arxiv_rate_limited():
+        return _tool_error(
+            "PAPER_FETCH_ARXIV_COOLDOWN",
+            "arXiv access is in cooldown due to rate limit; skip for now and continue with other sources.",
+        )
+
+    api_url = "https://export.arxiv.org/api/query"
+    try:
+        response = requests.get(
+            api_url,
+            params={"id_list": arxiv_id, "max_results": 1},
+            timeout=max(3, timeout_seconds),
+        )
+        if response.status_code == 429:
+            _mark_arxiv_cooldown()
+            return _tool_error("PAPER_FETCH_ARXIV_RATE_LIMITED", "arXiv returned HTTP 429")
+        response.raise_for_status()
+    except Exception as exc:
+        if _is_arxiv_rate_limit_error(exc):
+            _mark_arxiv_cooldown()
+            return _tool_error("PAPER_FETCH_ARXIV_RATE_LIMITED", repr(exc))
+        return _tool_error("PAPER_FETCH_ARXIV_FAILED", repr(exc))
+
+    try:
+        root = ET.fromstring(response.text)
+        ns = {"atom": "http://www.w3.org/2005/Atom"}
+        entry = root.find("atom:entry", ns)
+        if entry is None:
+            return _tool_error("PAPER_FETCH_ARXIV_EMPTY", f"arXiv id not found: {arxiv_id}")
+
+        title = (entry.findtext("atom:title", default="", namespaces=ns) or "").strip()
+        summary = (entry.findtext("atom:summary", default="", namespaces=ns) or "").strip()
+        summary = re.sub(r"\s+", " ", summary).strip()
+        return {
+            "ok": True,
+            "uri": f"https://arxiv.org/abs/{arxiv_id}",
+            "title": title,
+            "content": summary[:max_chars],
+            "truncated": len(summary) > max_chars,
+        }
+    except Exception as exc:
+        return _tool_error("PAPER_FETCH_ARXIV_PARSE_FAILED", repr(exc))
+
+
+def _arxiv_search(query: str, limit: int) -> list[dict[str, Any]]:
+    if _arxiv_rate_limited():
+        logger.warning("scholar_search.arxiv_cooldown_active skip=true")
+        return []
+
     try:
         import arxiv
 
-        client = arxiv.Client()
+        client = arxiv.Client(
+            page_size=min(_ARXIV_CLIENT_PAGE_SIZE, limit),
+            delay_seconds=_ARXIV_CLIENT_DELAY_SECONDS,
+            num_retries=_ARXIV_CLIENT_NUM_RETRIES,
+        )
         search = arxiv.Search(
             query=query,
             max_results=limit,
             sort_by=arxiv.SortCriterion.Relevance,
         )
+        rows: list[dict[str, Any]] = []
         for paper in client.results(search):
-            uri = str(getattr(paper, "entry_id", "") or "").strip()
-            if not uri or uri in seen_uri:
-                continue
-            seen_uri.add(uri)
-            merged.append(
+            rows.append(
                 {
                     "title": str(getattr(paper, "title", "") or "").strip(),
-                    "uri": uri,
+                    "uri": str(getattr(paper, "entry_id", "") or "").strip(),
                     "summary": str(getattr(paper, "summary", "") or "")[:1200],
                     "venue": "arXiv",
                     "year": str(getattr(getattr(paper, "published", None), "year", "") or ""),
                     "source_type": "paper",
                 }
             )
-            if len(merged) >= limit:
+            if len(rows) >= limit:
                 break
-    except Exception:
-        # Keep silent and try web fallback.
-        pass
+        return _dedupe_and_take(rows, limit)
+    except Exception as exc:
+        if _is_arxiv_rate_limit_error(exc):
+            _mark_arxiv_cooldown()
+            logger.warning("scholar_search.arxiv_rate_limited cooldown_applied=true error=%s", exc)
+        else:
+            logger.warning("scholar_search.arxiv_failed error=%s", exc)
+        return []
 
-    if include_web and len(merged) < limit:
-        try:
-            from langchain_tavily import TavilySearch
 
-            web_limit = max(1, min(limit - len(merged), limit))
-            tavily = TavilySearch(max_results=web_limit, search_depth="advanced")
-            results = tavily.invoke({"query": query})
-            items = results.get("results") if isinstance(results, dict) else []
-            if isinstance(items, list):
-                for item in items:
-                    if not isinstance(item, dict):
-                        continue
-                    uri = str(item.get("url") or "").strip()
-                    if not uri or uri in seen_uri:
-                        continue
-                    seen_uri.add(uri)
-                    merged.append(
-                        {
-                            "title": str(item.get("title") or "").strip(),
-                            "uri": uri,
-                            "summary": str(item.get("content") or "")[:800],
-                            "venue": "web",
-                            "year": "",
-                            "source_type": "web",
-                        }
-                    )
-                    if len(merged) >= limit:
-                        break
-        except Exception:
-            pass
+def _web_search(query: str, limit: int) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
+    try:
+        from langchain_tavily import TavilySearch
 
+        tavily = TavilySearch(max_results=limit, search_depth="advanced")
+        results = tavily.invoke({"query": query})
+        items = results.get("results") if isinstance(results, dict) else []
+        rows: list[dict[str, Any]] = []
+        if isinstance(items, list):
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                rows.append(
+                    {
+                        "title": str(item.get("title") or "").strip(),
+                        "uri": str(item.get("url") or "").strip(),
+                        "summary": str(item.get("content") or "")[:800],
+                        "venue": "web",
+                        "year": "",
+                        "source_type": "web",
+                    }
+                )
+                if len(rows) >= limit:
+                    break
+        return _dedupe_and_take(rows, limit)
+    except Exception as exc:
+        logger.warning("scholar_search.web_failed error=%s", exc)
+        return []
+
+
+def _future_result_or_empty(
+    future: Future[list[dict[str, Any]]],
+    *,
+    source_name: str,
+    timeout_seconds: float,
+) -> tuple[list[dict[str, Any]], str]:
+    try:
+        return future.result(timeout=timeout_seconds), "ok"
+    except FutureTimeoutError:
+        future.cancel()
+        logger.warning(
+            "scholar_search.source_timeout source=%s timeout_seconds=%.2f",
+            source_name,
+            timeout_seconds,
+        )
+        return [], "timeout"
+    except Exception as exc:
+        logger.warning("scholar_search.source_failed source=%s error=%s", source_name, exc)
+        return [], "failed"
+
+
+@tool
+def scholar_search(query: str, max_results: int = 12, include_web: bool = True) -> list[dict[str, Any]]:
+    """Unified academic search over arXiv + optional web fallback (parallel, timeout-aware)."""
+    limit = max(1, min(int(max_results), 20))
+    source_timeout = _SCHOLAR_SOURCE_TIMEOUT_SECONDS
+    started = time.monotonic()
+    logger.info(
+        "scholar_search.start include_web=%s max_results=%s query_preview=%s",
+        include_web,
+        limit,
+        (query or "")[:120],
+    )
+
+    arxiv_future: Future[list[dict[str, Any]]] = _SCHOLAR_EXECUTOR.submit(_arxiv_search, query, limit)
+    web_future: Future[list[dict[str, Any]]] | None = None
+    if include_web:
+        web_future = _SCHOLAR_EXECUTOR.submit(_web_search, query, limit)
+
+    arxiv_rows, arxiv_status = _future_result_or_empty(
+        arxiv_future,
+        source_name="arxiv",
+        timeout_seconds=source_timeout,
+    )
+    web_rows: list[dict[str, Any]] = []
+    web_status = "skipped"
+    if web_future is not None:
+        elapsed = max(0.0, time.monotonic() - started)
+        remaining_timeout = max(0.0, source_timeout - elapsed)
+        web_rows, web_status = _future_result_or_empty(
+            web_future,
+            source_name="web",
+            timeout_seconds=remaining_timeout,
+        )
+
+    arxiv_unavailable = arxiv_status in {"timeout", "failed"} or _arxiv_rate_limited()
+    if arxiv_unavailable and not web_rows:
+        logger.warning(
+            "scholar_search.degrade_web_only arxiv_status=%s include_web=%s",
+            arxiv_status,
+            include_web,
+        )
+        web_rows = _web_search(query, limit)
+        web_status = "fallback"
+
+    merged = _dedupe_and_take([*arxiv_rows, *web_rows], limit)
+    logger.info(
+        "scholar_search.done arxiv=%s web=%s merged=%s arxiv_status=%s web_status=%s elapsed=%.2fs",
+        len(arxiv_rows),
+        len(web_rows),
+        len(merged),
+        arxiv_status,
+        web_status,
+        max(0.0, time.monotonic() - started),
+    )
     if merged:
         return merged
     return [
@@ -143,7 +341,11 @@ def scholar_search(query: str, max_results: int = 12, include_web: bool = True) 
 
 
 @tool
-def paper_fetch(uri: str, max_chars: int = 5000, timeout_seconds: int = 20) -> dict[str, Any]:
+def paper_fetch(
+    uri: str,
+    max_chars: int = 5000,
+    timeout_seconds: int = _PAPER_FETCH_DEFAULT_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
     """Fetch abstract/full text preview from a paper/page URI."""
     target = (uri or "").strip()
     if not target:
@@ -152,26 +354,11 @@ def paper_fetch(uri: str, max_chars: int = 5000, timeout_seconds: int = 20) -> d
     max_chars = max(200, min(int(max_chars), 20000))
     timeout = max(3, min(int(timeout_seconds), 60))
 
-    if "arxiv.org" in target:
-        arxiv_id_match = re.search(r"arxiv\.org/(?:abs|pdf)/([^/?#]+)", target)
-        if arxiv_id_match:
-            arxiv_id = arxiv_id_match.group(1).replace(".pdf", "")
-            try:
-                import arxiv
-
-                search = arxiv.Search(id_list=[arxiv_id], max_results=1)
-                paper = next(arxiv.Client().results(search), None)
-                if paper is not None:
-                    summary = str(getattr(paper, "summary", "") or "")
-                    return {
-                        "ok": True,
-                        "uri": target,
-                        "title": str(getattr(paper, "title", "") or ""),
-                        "content": summary[:max_chars],
-                        "truncated": len(summary) > max_chars,
-                    }
-            except Exception:
-                pass
+    arxiv_id = _extract_arxiv_id(target)
+    if arxiv_id:
+        arxiv_result = _fetch_arxiv_entry_via_api(arxiv_id, timeout, max_chars)
+        if bool(arxiv_result.get("ok")):
+            return arxiv_result
 
     try:
         response = requests.get(target, timeout=timeout)

@@ -3,8 +3,8 @@ from langchain_core.tools import BaseTool
 
 from src.application.runtime import agent_factory as agent_runtime
 from src.application.runtime.agent_factory import AgentMode
-from src.application.runtime.spec_models import AgentSpec, WorkflowSpec
-from src.application.runtime.workflow_router import WorkflowRuntime
+from src.application.runtime.contracts.spec_models import AgentSpec, WorkflowSpec
+from src.application.runtime.orchestration.workflow_router import WorkflowRuntime
 
 
 class DummyTool(BaseTool):
@@ -112,7 +112,7 @@ def test_build_agent_from_spec_raises_on_resolver_error():
     assert "scholar_search" in str(exc.value)
 
 
-def test_build_agent_from_spec_raises_on_missing_tool():
+def test_build_agent_from_spec_skips_missing_tool(monkeypatch):
     spec = AgentSpec(
         id="planner",
         name="Planner Agent",
@@ -125,9 +125,19 @@ def test_build_agent_from_spec_raises_on_missing_tool():
     def tool_resolver(tool_id):
         return None
 
-    with pytest.raises(ValueError) as exc:
-        agent_runtime.build_agent_from_spec(spec, object(), tool_resolver)
-    assert "paper_fetch" in str(exc.value)
+    captured = {}
+
+    def fake_create_subagent(mode, llm, *, prompt, tools=None, output_schema=None, name="agent"):
+        captured["mode"] = mode
+        captured["tools"] = tools
+        return "react_agent"
+
+    monkeypatch.setattr(agent_runtime, "create_subagent", fake_create_subagent)
+
+    result = agent_runtime.build_agent_from_spec(spec, object(), tool_resolver)
+    assert result == "react_agent"
+    assert captured["mode"] == AgentMode.REACT
+    assert captured["tools"] == []
 
 
 @pytest.fixture
@@ -170,7 +180,7 @@ def proposal_workflow_spec():
                 {"from": "strict", "to": "synthesizer", "condition": "only"},
                 {"from": "reporter", "to": "end"},
             ],
-            "limits": {"max_steps": 8, "max_loops": 3},
+            "limits": {"max_steps": 10, "max_loops": 3},
         }
     )
 
@@ -361,6 +371,57 @@ def test_workflow_spec_rejects_path_plus_loops_exceeding_max_steps():
                 "limits": {"max_steps": 3, "max_loops": 2},
             }
         )
+
+
+def test_workflow_spec_derives_max_steps_when_missing():
+    spec = WorkflowSpec.model_validate(
+        {
+            "id": "derived_steps",
+            "name": "Derived Steps",
+            "entry_node": "planner",
+            "nodes": {
+                "planner": {"type": "agent", "agent_id": "planner"},
+                "search": {"type": "agent", "agent_id": "search"},
+                "end": {"type": "terminal"},
+            },
+            "edges": [
+                {"from": "planner", "to": "search"},
+                {"from": "search", "to": "end"},
+            ],
+            "limits": {"max_loops": 3},
+        }
+    )
+    # Baseline path has 2 agent steps; derived max_steps = baseline + max_loops.
+    assert spec.resolved_max_steps() == 5
+
+
+def test_workflow_spec_derives_max_steps_with_loop_cycle_budget():
+    spec = WorkflowSpec.model_validate(
+        {
+            "id": "derived_loop_steps",
+            "name": "Derived Loop Steps",
+            "entry_node": "planner",
+            "nodes": {
+                "planner": {"type": "agent", "agent_id": "planner"},
+                "search": {"type": "agent", "agent_id": "search"},
+                "write": {"type": "agent", "agent_id": "writer"},
+                "critic": {"type": "agent", "agent_id": "critic"},
+                "end": {"type": "terminal"},
+            },
+            "edges": [
+                {"from": "planner", "to": "search"},
+                {"from": "search", "to": "write"},
+                {"from": "write", "to": "critic"},
+                {"from": "critic", "to": "end"},
+                {"from": "critic", "to": "search", "condition": {"field": "x", "equals": 1}},
+            ],
+            "limits": {"max_loops": 2},
+        }
+    )
+    # Baseline path has 4 agent steps: planner -> search -> write -> critic.
+    # Loop cycle from search back to critic has 3 agent steps: search -> write -> critic.
+    # Derived max_steps = 4 + 2 * 3 = 10.
+    assert spec.resolved_max_steps() == 10
 
 
 def test_expression_condition_with_missing_field_falls_back():

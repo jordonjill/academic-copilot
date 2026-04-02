@@ -28,10 +28,10 @@ from typing import Any, Callable, Dict, Optional
 from dotenv import load_dotenv
 from langchain_core.messages import BaseMessage, HumanMessage
 
-from src.application.runtime.config_registry import ConfigRegistry
-from src.application.runtime.env_utils import read_env_float
+from src.application.runtime.config.config_registry import ConfigRegistry
+from src.application.runtime.contracts.state_types import RuntimeState
 from src.application.runtime.runtime_engine import RuntimeEngine
-from src.application.runtime.state_types import RuntimeState
+from src.application.runtime.utils.env_utils import read_env_float
 from src.infrastructure.memory import MemoryAdapter
 from src.infrastructure.memory.sqlite_store import SQLiteStore
 from src.infrastructure.tools.tool_manager import get_tool_manager
@@ -44,7 +44,9 @@ _CONFIG_REGISTRY = ConfigRegistry(config_root=_CONFIG_ROOT)
 logger = logging.getLogger(__name__)
 _APP_LOCK = threading.Lock()
 _COPILOT_BY_MODEL: dict[str, "AcademicCopilotApp"] = {}
-_DEFAULT_CHAT_TURN_TIMEOUT_SECONDS = 120.0
+_DEFAULT_CHAT_TURN_TIMEOUT_SECONDS = 600.0
+_DEFAULT_SUPERVISOR_WALL_TIMEOUT_SECONDS = 900.0
+_DEFAULT_WORKFLOW_WALL_TIMEOUT_SECONDS = 900.0
 _MAX_LAST_STATES = 128
 _TIMEOUT_RELATION_WARNED_FOR: tuple[float, float, float, float] | None = None
 _TIMEOUT_RELATION_LOCK = threading.Lock()
@@ -494,8 +496,14 @@ def _has_unresolved_env_placeholder(value: Any) -> bool:
 
 def _warn_timeout_misconfiguration(chat_timeout: float) -> None:
     llm_timeout = _llm_request_timeout_seconds()
-    supervisor_timeout = read_env_float("SUPERVISOR_MAX_WALL_TIME_SECONDS", 180.0)
-    workflow_timeout = read_env_float("WORKFLOW_MAX_WALL_TIME_SECONDS", 300.0)
+    supervisor_timeout = read_env_float(
+        "SUPERVISOR_MAX_WALL_TIME_SECONDS",
+        _DEFAULT_SUPERVISOR_WALL_TIMEOUT_SECONDS,
+    )
+    workflow_timeout = read_env_float(
+        "WORKFLOW_MAX_WALL_TIME_SECONDS",
+        _DEFAULT_WORKFLOW_WALL_TIMEOUT_SECONDS,
+    )
     key = (
         round(llm_timeout, 3),
         round(chat_timeout, 3),
@@ -528,8 +536,14 @@ def warn_timeout_misconfiguration_once() -> None:
 def validate_timeout_hierarchy_or_raise() -> None:
     llm_timeout = _llm_request_timeout_seconds()
     chat_timeout = _chat_turn_timeout_seconds()
-    supervisor_timeout = read_env_float("SUPERVISOR_MAX_WALL_TIME_SECONDS", 180.0)
-    workflow_timeout = read_env_float("WORKFLOW_MAX_WALL_TIME_SECONDS", 300.0)
+    supervisor_timeout = read_env_float(
+        "SUPERVISOR_MAX_WALL_TIME_SECONDS",
+        _DEFAULT_SUPERVISOR_WALL_TIMEOUT_SECONDS,
+    )
+    workflow_timeout = read_env_float(
+        "WORKFLOW_MAX_WALL_TIME_SECONDS",
+        _DEFAULT_WORKFLOW_WALL_TIMEOUT_SECONDS,
+    )
     min_runtime_timeout = min(supervisor_timeout, workflow_timeout)
     if not (llm_timeout < chat_timeout < min_runtime_timeout):
         raise ValueError(

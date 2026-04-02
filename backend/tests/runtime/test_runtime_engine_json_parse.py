@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.application.runtime.config_registry import ConfigRegistry
+from src.application.runtime.config.config_registry import ConfigRegistry
 from src.application.runtime.runtime_engine import RuntimeEngine
 
 
