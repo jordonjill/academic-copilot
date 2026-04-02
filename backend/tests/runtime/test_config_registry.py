@@ -444,6 +444,101 @@ def test_registry_preserves_last_known_good(tmp_path):
     )
 
 
+def test_registry_loads_system_and_user_agents_separately(tmp_path):
+    config_root = tmp_path / "config"
+    agents_dir = config_root / "agents"
+    system_dir = config_root / "system"
+    workflows_dir = config_root / "workflows"
+    agents_dir.mkdir(parents=True)
+    system_dir.mkdir(parents=True)
+    workflows_dir.mkdir(parents=True)
+
+    (system_dir / "supervisor.yaml").write_text(
+        "\n".join(
+            [
+                "id: supervisor",
+                "name: Main Supervisor",
+                "mode: chain",
+                "system_prompt: supervisor prompt",
+                "tools: []",
+                "llm:",
+                "  name: openai_default",
+            ]
+        )
+    )
+    (agents_dir / "planner.yaml").write_text(
+        "\n".join(
+            [
+                "id: planner_proposal",
+                "name: Proposal Planner",
+                "mode: chain",
+                "system_prompt: planner prompt",
+                "tools: []",
+                "llm:",
+                "  name: openai_default",
+            ]
+        )
+    )
+    (workflows_dir / "proposal_v2.yaml").write_text(
+        "\n".join(
+            [
+                "id: proposal_v2",
+                "name: Proposal v2",
+                "entry_node: planner",
+                "nodes:",
+                "  planner:",
+                "    type: agent",
+                "    agent_id: planner_proposal",
+                "  end:",
+                "    type: terminal",
+                "edges:",
+                "  - from: planner",
+                "    to: end",
+            ]
+        )
+    )
+
+    registry = ConfigRegistry(config_root=config_root)
+    report = registry.reload()
+
+    assert "supervisor" in report["loaded_agents"]
+    assert "planner_proposal" in report["loaded_agents"]
+    assert report["loaded_system_agents"] == ["supervisor"]
+    assert report["loaded_subagents"] == ["planner_proposal"]
+    assert set(registry.system_agents.keys()) == {"supervisor"}
+    assert set(registry.subagents.keys()) == {"planner_proposal"}
+
+
+def test_registry_rejects_reserved_supervisor_id_in_user_agents(tmp_path):
+    config_root = tmp_path / "config"
+    agents_dir = config_root / "agents"
+    agents_dir.mkdir(parents=True)
+
+    (agents_dir / "supervisor.yaml").write_text(
+        "\n".join(
+            [
+                "id: supervisor",
+                "name: User Supervisor Override",
+                "mode: chain",
+                "system_prompt: should be rejected",
+                "tools: []",
+                "llm:",
+                "  name: openai_default",
+            ]
+        )
+    )
+
+    registry = ConfigRegistry(config_root=config_root)
+    report = registry.reload()
+
+    assert "supervisor" not in report["loaded_agents"]
+    assert any(
+        failure.get("type") == "agent"
+        and "reserved for system use" in failure.get("error", "")
+        for failure in report["failed_objects"]
+    )
+
+
 def test_registry_llm_env_expansion_allows_missing_variables_for_unused_profiles(tmp_path, monkeypatch):
     config_root = tmp_path / "config"
     config_root.mkdir(parents=True)

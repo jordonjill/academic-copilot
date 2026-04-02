@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Protocol, TypeVar
 
@@ -17,6 +18,17 @@ class _HasId(Protocol):
 
 _SpecT = TypeVar("_SpecT", bound=_HasId)
 _RecordFailure = Callable[[str, Path, Exception | str], None]
+_SYSTEM_AGENTS_DIRNAME = "system"
+_RESERVED_SYSTEM_AGENT_IDS = {"supervisor"}
+
+
+@dataclass
+class _LoadedAgents:
+    merged: Dict[str, AgentSpec]
+    user: Dict[str, AgentSpec]
+    system: Dict[str, AgentSpec]
+    preserve_user_ids: set[str]
+    preserve_system_ids: set[str]
 
 
 class ConfigRegistry:
@@ -25,11 +37,14 @@ class ConfigRegistry:
         self.config_version = 0
         self.llms: Dict[str, LLMProfileSpec] = {}
         self.agents: Dict[str, AgentSpec] = {}
+        self.subagents: Dict[str, AgentSpec] = {}
+        self.system_agents: Dict[str, AgentSpec] = {}
         self.workflows: Dict[str, WorkflowSpec] = {}
 
     def reload(self) -> Dict[str, Any]:
         llms_path = self.config_root / "llms.yaml"
         agents_dir = self.config_root / "agents"
+        system_agents_dir = self.config_root / _SYSTEM_AGENTS_DIRNAME
         workflows_dir = self.config_root / "workflows"
 
         failed_objects: List[Dict[str, str]] = []
@@ -44,7 +59,15 @@ class ConfigRegistry:
             )
 
         new_llms, preserve_llm_names = self._load_llms(llms_path, record_failure)
-        new_agents, preserve_agent_ids = self._load_agents(agents_dir, record_failure)
+        loaded_agents = self._load_agents(
+            agents_dir=agents_dir,
+            system_agents_dir=system_agents_dir,
+            record_failure=record_failure,
+        )
+        new_agents = loaded_agents.merged
+        new_subagents = loaded_agents.user
+        new_system_agents = loaded_agents.system
+        preserve_agent_ids = loaded_agents.preserve_user_ids | loaded_agents.preserve_system_ids
         new_workflows, preserve_workflow_ids = self._load_workflows(workflows_dir, record_failure)
 
         for failed_name in preserve_llm_names:
@@ -54,6 +77,10 @@ class ConfigRegistry:
         for failed_id in preserve_agent_ids:
             if failed_id in self.agents and failed_id not in new_agents:
                 new_agents[failed_id] = self.agents[failed_id]
+            if failed_id in self.subagents and failed_id not in new_subagents:
+                new_subagents[failed_id] = self.subagents[failed_id]
+            if failed_id in self.system_agents and failed_id not in new_system_agents:
+                new_system_agents[failed_id] = self.system_agents[failed_id]
 
         for failed_id in preserve_workflow_ids:
             if failed_id in self.workflows and failed_id not in new_workflows:
@@ -61,6 +88,8 @@ class ConfigRegistry:
 
         self.llms = new_llms
         self.agents = new_agents
+        self.subagents = new_subagents
+        self.system_agents = new_system_agents
         self.workflows = new_workflows
         self.config_version += 1
 
@@ -68,6 +97,8 @@ class ConfigRegistry:
             "config_version": self.config_version,
             "loaded_llms": sorted(self.llms.keys()),
             "loaded_agents": sorted(self.agents.keys()),
+            "loaded_subagents": sorted(self.subagents.keys()),
+            "loaded_system_agents": sorted(self.system_agents.keys()),
             "loaded_workflows": sorted(self.workflows.keys()),
             "failed_objects": failed_objects,
         }
@@ -127,14 +158,54 @@ class ConfigRegistry:
 
     def _load_agents(
         self,
+        *,
         agents_dir: Path,
+        system_agents_dir: Path,
         record_failure: _RecordFailure,
-    ) -> tuple[Dict[str, AgentSpec], set[str]]:
-        return self._load_typed_objects(
+    ) -> _LoadedAgents:
+        user_agents, preserve_user_ids = self._load_typed_objects(
             kind="agent",
             root=agents_dir,
             record_failure=record_failure,
             validator=AgentSpec.model_validate,
+        )
+        system_agents, preserve_system_ids = self._load_typed_objects(
+            kind="agent",
+            root=system_agents_dir,
+            record_failure=record_failure,
+            validator=AgentSpec.model_validate,
+        )
+
+        for reserved_id in sorted(_RESERVED_SYSTEM_AGENT_IDS):
+            if reserved_id in user_agents:
+                record_failure(
+                    "agent",
+                    agents_dir,
+                    ValueError(
+                        f"Agent id '{reserved_id}' is reserved for system use. "
+                        f"Move it to '{_SYSTEM_AGENTS_DIRNAME}/' and keep user-editable subagents under 'agents/'."
+                    ),
+                )
+                user_agents.pop(reserved_id, None)
+                preserve_user_ids.discard(reserved_id)
+
+        merged_agents: Dict[str, AgentSpec] = dict(system_agents)
+        for agent_id, spec in user_agents.items():
+            if agent_id in merged_agents:
+                record_failure(
+                    "agent",
+                    agents_dir,
+                    ValueError(f"Duplicate agent id between system and user agent catalogs: {agent_id}"),
+                )
+                continue
+            merged_agents[agent_id] = spec
+
+        return _LoadedAgents(
+            merged=merged_agents,
+            user=user_agents,
+            system=system_agents,
+            preserve_user_ids=preserve_user_ids,
+            preserve_system_ids=preserve_system_ids,
         )
 
     def _load_workflows(

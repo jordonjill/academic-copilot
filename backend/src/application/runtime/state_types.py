@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Optional, TypedDict
+from typing import Any, NotRequired, Optional, TypedDict
 
 from langchain_core.messages import BaseMessage
 
@@ -33,6 +33,10 @@ class RuntimeIOState(TypedDict):
 class RuntimeArtifactsState(TypedDict):
     topic: Optional[str]
     shared: dict[str, Any]
+    execution_trace: list[dict[str, Any]]
+    supervisor_instruction: NotRequired[str]
+    task_input: NotRequired[dict[str, Any]]
+    workflow_runner_input: NotRequired[dict[str, Any]]
 
 
 class RuntimeOutputState(TypedDict):

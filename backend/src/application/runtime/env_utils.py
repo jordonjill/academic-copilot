@@ -25,3 +25,21 @@ def read_env_float(
             if value <= minimum:
                 return default
     return value
+
+
+def read_env_int(
+    name: str,
+    default: int,
+    *,
+    minimum: int | None = None,
+) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    if minimum is not None and value < minimum:
+        return default
+    return value

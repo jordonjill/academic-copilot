@@ -3,8 +3,9 @@ from __future__ import annotations
 from langchain_core.prompts import PromptTemplate
 
 # NOTE:
-# Agent orchestration prompts (planner/researcher/critic/reporter/supervisor) are
-# now managed in YAML under backend/config/agents/*.yaml.
+# Agent orchestration prompts are managed in YAML:
+# - system supervisor: backend/config/system/*.yaml
+# - user-editable subagents: backend/config/agents/*.yaml
 # This module only keeps prompts used by the optional STM/LTM memory pipeline.
 
 

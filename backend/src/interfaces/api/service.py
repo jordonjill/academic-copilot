@@ -75,6 +75,8 @@ def reload_runtime_config() -> Dict[str, Any]:
         "loaded": {
             "llms": report.get("loaded_llms", []),
             "agents": report["loaded_agents"],
+            "subagents": report.get("loaded_subagents", report["loaded_agents"]),
+            "system_agents": report.get("loaded_system_agents", []),
             "workflows": report["loaded_workflows"],
         },
         "failed": failed,
@@ -332,6 +334,8 @@ class AcademicCopilotApp:
             config_probe = {
                 "config_version": _CONFIG_REGISTRY.config_version,
                 "loaded_agents": len(_CONFIG_REGISTRY.agents),
+                "loaded_subagents": len(getattr(_CONFIG_REGISTRY, "subagents", {})),
+                "loaded_system_agents": len(getattr(_CONFIG_REGISTRY, "system_agents", {})),
                 "loaded_workflows": len(_CONFIG_REGISTRY.workflows),
             }
             runtime_ok = bool(runtime_probe.get("ok", False))
@@ -393,6 +397,7 @@ class AcademicCopilotApp:
             "artifacts": {
                 "topic": None,
                 "shared": {},
+                "execution_trace": [],
             },
             "output": {
                 "final_text": None,

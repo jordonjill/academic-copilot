@@ -14,6 +14,7 @@ FastAPI backend for a config-driven supervisor/subagent/workflow runtime.
 backend/
 ├── main.py
 ├── config/
+│   ├── system/
 │   ├── agents/
 │   ├── workflows/
 │   └── tools.yaml
@@ -82,7 +83,8 @@ The backend serves frontend static files from `../frontend`:
 
 Runtime config is loaded from:
 
-- `backend/config/agents/*.yaml`
+- `backend/config/system/*.yaml` (system-internal agents, e.g. `supervisor`)
+- `backend/config/agents/*.yaml` (user-editable subagents)
 - `backend/config/workflows/*.yaml`
 
 Tools config is loaded from:

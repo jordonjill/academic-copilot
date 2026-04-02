@@ -19,7 +19,15 @@ from langchain_openai import ChatOpenAI
 
 from src.application.runtime.agent_factory import build_agent_from_spec
 from src.application.runtime.config_registry import ConfigRegistry
-from src.application.runtime.env_utils import read_env_float
+from src.application.runtime.context_facility import ContextFacility
+from src.application.runtime.env_utils import read_env_float, read_env_int
+from src.application.runtime.io_models import (
+    AgentTaskInput,
+    AgentTaskOutput,
+    SupervisorDecision,
+    WorkflowRunnerInput,
+    WorkflowRunnerOutput,
+)
 from src.application.runtime.state_types import RuntimeState
 from src.application.runtime.spec_models import AgentSpec
 from src.application.runtime.workflow_router import WorkflowRuntime
@@ -36,6 +44,10 @@ _SUPERVISOR_MAX_SUBAGENT_CALLS_ENV = "SUPERVISOR_MAX_SUBAGENT_CALLS_PER_AGENT"
 _ENV_PLACEHOLDER_PATTERN = re.compile(r"\$\{\w+\}")
 logger = logging.getLogger(__name__)
 _SUPERVISOR_DECISION_PARSER = JsonOutputParser()
+_SUPERVISOR_ACTION_MAP = {
+    "run_subagent": "run_agent",
+    "start_workflow": "run_workflow",
+}
 
 
 class ExecutionResult(TypedDict):
@@ -55,8 +67,8 @@ class RuntimeEngine:
         self._llm_cache: OrderedDict[
             tuple[str, str, str, str, str, str], BaseLanguageModel
         ] = OrderedDict()
-        self._llm_cache_max_size = max(1, _read_int_env("LLM_CACHE_MAX_SIZE", 128))
-        self._chain_context_messages_window = max(1, _read_int_env("CHAIN_CONTEXT_MESSAGES_WINDOW", 12))
+        self._llm_cache_max_size = max(1, read_env_int("LLM_CACHE_MAX_SIZE", 128, minimum=1))
+        self._context_facility = ContextFacility.from_env()
         self._llm_cache_lock = threading.Lock()
         self._llm_cache_hits = 0
         self._llm_cache_misses = 0
@@ -148,8 +160,8 @@ class RuntimeEngine:
             self._run_chitchat(state)
             return
 
-        max_steps = max(1, _read_int_env("SUPERVISOR_MAX_STEPS", 8))
-        max_subagent_calls_per_agent = _read_int_env(_SUPERVISOR_MAX_SUBAGENT_CALLS_ENV, 2)
+        max_steps = max(1, read_env_int("SUPERVISOR_MAX_STEPS", 8, minimum=1))
+        max_subagent_calls_per_agent = read_env_int(_SUPERVISOR_MAX_SUBAGENT_CALLS_ENV, 2, minimum=0)
         max_subagent_calls_per_agent = max(0, max_subagent_calls_per_agent)
         max_wall_seconds = read_env_float("SUPERVISOR_MAX_WALL_TIME_SECONDS", 180.0)
         started = perf_counter()
@@ -175,16 +187,23 @@ class RuntimeEngine:
                 state["runtime"].get("step_count", 0),
             )
 
-            if action == "start_workflow":
+            if action == "run_workflow":
                 workflow_id = self._resolve_workflow_target(decision, state)
                 if workflow_id and workflow_id in self.registry.workflows:
+                    self._append_execution_trace(
+                        state,
+                        action=action,
+                        target=workflow_id,
+                        reason=str(decision.get("reason") or ""),
+                        instruction=str(decision.get("instruction") or ""),
+                    )
                     self._execute_workflow_isolated(state, workflow_id, step_callback)
                     self._finalize_with_supervisor(state, requested_workflow_id=workflow_id)
                     return
                 # Invalid target: degrade gracefully.
                 action = "direct_reply"
 
-            if action == "run_subagent":
+            if action == "run_agent":
                 agent_id = self._resolve_subagent_target(decision)
                 if agent_id and agent_id in self.registry.agents and agent_id != supervisor_spec.id:
                     calls_used = subagent_call_counts.get(agent_id, 0)
@@ -219,7 +238,20 @@ class RuntimeEngine:
                         state["context"]["messages"].append(
                             HumanMessage(content=f"Supervisor task for {agent_id}: {instruction}")
                         )
-                    self._execute_subagent_isolated(state, agent_id, instruction)
+                    input_artifact_keys = decision.get("input_artifact_keys")
+                    self._execute_subagent_isolated(
+                        state,
+                        agent_id,
+                        instruction,
+                        input_artifact_keys if isinstance(input_artifact_keys, list) else None,
+                    )
+                    self._append_execution_trace(
+                        state,
+                        action=action,
+                        target=agent_id,
+                        reason=str(decision.get("reason") or ""),
+                        instruction=str(instruction or ""),
+                    )
                     subagent_call_counts[agent_id] = calls_used + 1
                     state["runtime"]["step_count"] += 1
                     if step_callback is not None:
@@ -245,6 +277,13 @@ class RuntimeEngine:
                     final_text = decision.get("message")
                 if not isinstance(final_text, str) or not final_text.strip():
                     final_text = state["io"].get("last_model_output") or "No output produced."
+                self._append_execution_trace(
+                    state,
+                    action=action,
+                    target=None,
+                    reason=str(decision.get("reason") or ""),
+                    instruction="",
+                )
                 state["output"]["final_text"] = final_text
                 state["io"]["last_model_output"] = final_text
                 state["context"]["messages"].append(AIMessage(content=final_text))
@@ -276,8 +315,8 @@ class RuntimeEngine:
             await self._run_chitchat_async(state)
             return
 
-        max_steps = max(1, _read_int_env("SUPERVISOR_MAX_STEPS", 8))
-        max_subagent_calls_per_agent = _read_int_env(_SUPERVISOR_MAX_SUBAGENT_CALLS_ENV, 2)
+        max_steps = max(1, read_env_int("SUPERVISOR_MAX_STEPS", 8, minimum=1))
+        max_subagent_calls_per_agent = read_env_int(_SUPERVISOR_MAX_SUBAGENT_CALLS_ENV, 2, minimum=0)
         max_subagent_calls_per_agent = max(0, max_subagent_calls_per_agent)
         max_wall_seconds = read_env_float("SUPERVISOR_MAX_WALL_TIME_SECONDS", 180.0)
         started = perf_counter()
@@ -303,15 +342,22 @@ class RuntimeEngine:
                 state["runtime"].get("step_count", 0),
             )
 
-            if action == "start_workflow":
+            if action == "run_workflow":
                 workflow_id = self._resolve_workflow_target(decision, state)
                 if workflow_id and workflow_id in self.registry.workflows:
+                    self._append_execution_trace(
+                        state,
+                        action=action,
+                        target=workflow_id,
+                        reason=str(decision.get("reason") or ""),
+                        instruction=str(decision.get("instruction") or ""),
+                    )
                     await self._execute_workflow_isolated_async(state, workflow_id, step_callback)
                     await self._finalize_with_supervisor_async(state, requested_workflow_id=workflow_id)
                     return
                 action = "direct_reply"
 
-            if action == "run_subagent":
+            if action == "run_agent":
                 agent_id = self._resolve_subagent_target(decision)
                 if agent_id and agent_id in self.registry.agents and agent_id != supervisor_spec.id:
                     calls_used = subagent_call_counts.get(agent_id, 0)
@@ -346,7 +392,20 @@ class RuntimeEngine:
                         state["context"]["messages"].append(
                             HumanMessage(content=f"Supervisor task for {agent_id}: {instruction}")
                         )
-                    await self._execute_subagent_isolated_async(state, agent_id, instruction)
+                    input_artifact_keys = decision.get("input_artifact_keys")
+                    await self._execute_subagent_isolated_async(
+                        state,
+                        agent_id,
+                        instruction,
+                        input_artifact_keys if isinstance(input_artifact_keys, list) else None,
+                    )
+                    self._append_execution_trace(
+                        state,
+                        action=action,
+                        target=agent_id,
+                        reason=str(decision.get("reason") or ""),
+                        instruction=str(instruction or ""),
+                    )
                     subagent_call_counts[agent_id] = calls_used + 1
                     state["runtime"]["step_count"] += 1
                     await self._emit_step_callback_async(
@@ -372,6 +431,13 @@ class RuntimeEngine:
                     final_text = decision.get("message")
                 if not isinstance(final_text, str) or not final_text.strip():
                     final_text = state["io"].get("last_model_output") or "No output produced."
+                self._append_execution_trace(
+                    state,
+                    action=action,
+                    target=None,
+                    reason=str(decision.get("reason") or ""),
+                    instruction="",
+                )
                 state["output"]["final_text"] = final_text
                 state["io"]["last_model_output"] = final_text
                 state["context"]["messages"].append(AIMessage(content=final_text))
@@ -448,37 +514,67 @@ class RuntimeEngine:
         raw_text: str,
         state: RuntimeState,
     ) -> Dict[str, Any]:
-        action = parsed.get("action")
-        if not isinstance(action, str):
-            action = "direct_reply"
-
-        target = parsed.get("target")
-        if not isinstance(target, str):
-            target = parsed.get("workflow_id") if action == "start_workflow" else parsed.get("agent_id")
-        if not isinstance(target, str):
-            target = None
-
-        final_text = parsed.get("final_text")
-        if not isinstance(final_text, str):
-            final_text = parsed.get("message")
-        if not isinstance(final_text, str):
-            final_text = raw_text
-
-        done = bool(parsed.get("done", False))
-        if done and not final_text.strip():
+        decision_model = self._coerce_supervisor_decision_model(parsed, raw_text)
+        final_text = decision_model.final_text or raw_text
+        if decision_model.done and not final_text.strip():
             final_text = state["io"].get("last_model_output") or "No output produced."
 
         normalized: Dict[str, Any] = {
-            "action": action.strip().lower(),
-            "target": target,
+            "action": decision_model.action,
+            "target": decision_model.target,
             "final_text": final_text,
-            "done": done,
+            "done": decision_model.done,
+            "reason": decision_model.reason,
+            "input_artifact_keys": list(decision_model.input_artifact_keys),
         }
-        if isinstance(parsed.get("instruction"), str):
-            normalized["instruction"] = parsed["instruction"]
-        if isinstance(parsed.get("reason"), str):
-            normalized["reason"] = parsed["reason"]
+        if isinstance(decision_model.instruction, str) and decision_model.instruction.strip():
+            normalized["instruction"] = decision_model.instruction
         return normalized
+
+    def _coerce_supervisor_decision_model(
+        self,
+        parsed: Dict[str, Any],
+        raw_text: str,
+    ) -> SupervisorDecision:
+        raw_payload = dict(parsed or {})
+        action = raw_payload.get("action")
+        if not isinstance(action, str):
+            action = "direct_reply"
+        action = action.strip().lower()
+        action = _SUPERVISOR_ACTION_MAP.get(action, action)
+        if action not in {"direct_reply", "run_agent", "run_workflow"}:
+            action = "direct_reply"
+        target = raw_payload.get("target")
+        if not isinstance(target, str):
+            if action == "run_workflow":
+                target = raw_payload.get("workflow_id")
+            elif action == "run_agent":
+                target = raw_payload.get("agent_id")
+        final_text = raw_payload.get("final_text")
+        if not isinstance(final_text, str):
+            final_text = raw_payload.get("message")
+        if not isinstance(final_text, str):
+            final_text = raw_text
+
+        cleaned_payload: Dict[str, Any] = {
+            "action": action,
+            "target": target if isinstance(target, str) and target.strip() else None,
+            "instruction": raw_payload.get("instruction") if isinstance(raw_payload.get("instruction"), str) else None,
+            "input_artifact_keys": raw_payload.get("input_artifact_keys", []),
+            "done": bool(raw_payload.get("done", False)),
+            "final_text": final_text,
+            "reason": raw_payload.get("reason") if isinstance(raw_payload.get("reason"), str) else "",
+        }
+
+        try:
+            return SupervisorDecision.model_validate(cleaned_payload)
+        except Exception:
+            return SupervisorDecision(
+                action="direct_reply",
+                final_text=raw_text,
+                done=False,
+                reason="invalid supervisor decision payload, degraded to direct_reply",
+            )
 
     def _resolve_workflow_target(self, decision: Dict[str, Any], state: RuntimeState) -> Optional[str]:
         del state
@@ -624,7 +720,7 @@ class RuntimeEngine:
             if not isinstance(agent_id, str):
                 raise RuntimeError(f"Invalid agent_id for node: {current_node}")
 
-            self._execute_agent(state, current_node, agent_id)
+            self._execute_workflow_agent_isolated(state, current_node, agent_id)
             state["runtime"]["step_count"] += 1
 
             next_node = runtime.next_node(current_node, state)
@@ -701,7 +797,7 @@ class RuntimeEngine:
             if not isinstance(agent_id, str):
                 raise RuntimeError(f"Invalid agent_id for node: {current_node}")
 
-            await self._execute_agent_async(state, current_node, agent_id)
+            await self._execute_workflow_agent_isolated_async(state, current_node, agent_id)
             state["runtime"]["step_count"] += 1
 
             next_node = runtime.next_node(current_node, state)
@@ -726,6 +822,55 @@ class RuntimeEngine:
             visit_counts[next_node] = visit_counts.get(next_node, 0) + 1
             current_node = next_node
 
+    def _execute_workflow_agent_isolated(
+        self,
+        state: RuntimeState,
+        node_name: str,
+        agent_id: str,
+    ) -> None:
+        instruction = self._build_workflow_node_instruction(state, node_name, agent_id)
+        isolated_state = self._build_isolated_subagent_state(
+            state,
+            agent_id,
+            instruction,
+            input_artifact_keys=None,
+        )
+        self._execute_agent(isolated_state, node_name, agent_id)
+        result = self._collect_subagent_execution_result(isolated_state, agent_id)
+        self._deliver_execution_result_to_supervisor(state, result)
+
+    async def _execute_workflow_agent_isolated_async(
+        self,
+        state: RuntimeState,
+        node_name: str,
+        agent_id: str,
+    ) -> None:
+        instruction = self._build_workflow_node_instruction(state, node_name, agent_id)
+        isolated_state = self._build_isolated_subagent_state(
+            state,
+            agent_id,
+            instruction,
+            input_artifact_keys=None,
+        )
+        await self._execute_agent_async(isolated_state, node_name, agent_id)
+        result = self._collect_subagent_execution_result(isolated_state, agent_id)
+        self._deliver_execution_result_to_supervisor(state, result)
+
+    def _build_workflow_node_instruction(
+        self,
+        state: RuntimeState,
+        node_name: str,
+        agent_id: str,
+    ) -> str:
+        user_text = state.get("input", {}).get("user_text", "")
+        artifacts = self._select_input_artifacts(state, input_artifact_keys=None)
+        artifact_text = json.dumps(artifacts, ensure_ascii=False, default=str)
+        return (
+            f"[workflow_node={node_name} agent={agent_id}] "
+            f"User request: {user_text}\n"
+            f"Current artifacts: {artifact_text}"
+        )
+
     def _execute_agent(self, state: RuntimeState, node_name: str, agent_id: str) -> None:
         if agent_id not in self.registry.agents:
             raise RuntimeError(f"Agent not found: {agent_id}")
@@ -741,7 +886,7 @@ class RuntimeEngine:
         payload = self._build_chain_payload(state, node_name, agent_id)
         raw = runnable.invoke(payload)
         text = self._coerce_text(raw)
-        parsed = self._try_parse_json(text)
+        parsed = self._normalize_agent_parsed_payload(text, self._try_parse_json(text))
 
         state["io"]["last_model_output"] = text
         state["io"]["last_tool_outputs"] = []
@@ -764,7 +909,7 @@ class RuntimeEngine:
         payload = self._build_chain_payload(state, node_name, agent_id)
         raw = await self._invoke_async(runnable, payload)
         text = self._coerce_text(raw)
-        parsed = self._try_parse_json(text)
+        parsed = self._normalize_agent_parsed_payload(text, self._try_parse_json(text))
 
         state["io"]["last_model_output"] = text
         state["io"]["last_tool_outputs"] = []
@@ -786,7 +931,7 @@ class RuntimeEngine:
             tool_outputs = []
             state["context"]["messages"].append(AIMessage(content=ai_text))
 
-        parsed = self._try_parse_json(ai_text)
+        parsed = self._normalize_agent_parsed_payload(ai_text, self._try_parse_json(ai_text))
         state["io"]["last_model_output"] = ai_text
         state["io"]["last_tool_outputs"] = tool_outputs
 
@@ -812,7 +957,7 @@ class RuntimeEngine:
             tool_outputs = []
             state["context"]["messages"].append(AIMessage(content=ai_text))
 
-        parsed = self._try_parse_json(ai_text)
+        parsed = self._normalize_agent_parsed_payload(ai_text, self._try_parse_json(ai_text))
         state["io"]["last_model_output"] = ai_text
         state["io"]["last_tool_outputs"] = tool_outputs
 
@@ -823,8 +968,14 @@ class RuntimeEngine:
         state: RuntimeState,
         agent_id: str,
         instruction: Any,
+        input_artifact_keys: Optional[list[str]] = None,
     ) -> None:
-        isolated_state = self._build_isolated_subagent_state(state, agent_id, instruction)
+        isolated_state = self._build_isolated_subagent_state(
+            state,
+            agent_id,
+            instruction,
+            input_artifact_keys=input_artifact_keys,
+        )
         self._execute_agent(isolated_state, agent_id, agent_id)
         result = self._collect_subagent_execution_result(isolated_state, agent_id)
         self._deliver_execution_result_to_supervisor(state, result)
@@ -834,8 +985,14 @@ class RuntimeEngine:
         state: RuntimeState,
         agent_id: str,
         instruction: Any,
+        input_artifact_keys: Optional[list[str]] = None,
     ) -> None:
-        isolated_state = self._build_isolated_subagent_state(state, agent_id, instruction)
+        isolated_state = self._build_isolated_subagent_state(
+            state,
+            agent_id,
+            instruction,
+            input_artifact_keys=input_artifact_keys,
+        )
         await self._execute_agent_async(isolated_state, agent_id, agent_id)
         result = self._collect_subagent_execution_result(isolated_state, agent_id)
         self._deliver_execution_result_to_supervisor(state, result)
@@ -846,7 +1003,16 @@ class RuntimeEngine:
         workflow_id: str,
         step_callback: Optional[StepCallback],
     ) -> None:
-        isolated_state = self._build_isolated_workflow_state(state, workflow_id)
+        runner_input = WorkflowRunnerInput(
+            workflow_id=workflow_id,
+            instruction=state["input"].get("user_text", ""),
+            seed_artifacts=self._select_input_artifacts(state, input_artifact_keys=None),
+            limits={
+                "max_steps": self.registry.workflows[workflow_id].limits.get("max_steps", 20),
+                "max_loops": self.registry.workflows[workflow_id].limits.get("max_loops", 4),
+            },
+        )
+        isolated_state = self._build_isolated_workflow_state(state, workflow_id, runner_input=runner_input)
         self._run_workflow(isolated_state, workflow_id, step_callback)
         state["runtime"]["step_count"] += int(isolated_state.get("runtime", {}).get("step_count", 0))
         state["runtime"]["loop_count"] += int(isolated_state.get("runtime", {}).get("loop_count", 0))
@@ -859,7 +1025,16 @@ class RuntimeEngine:
         workflow_id: str,
         step_callback: Optional[StepCallback],
     ) -> None:
-        isolated_state = self._build_isolated_workflow_state(state, workflow_id)
+        runner_input = WorkflowRunnerInput(
+            workflow_id=workflow_id,
+            instruction=state["input"].get("user_text", ""),
+            seed_artifacts=self._select_input_artifacts(state, input_artifact_keys=None),
+            limits={
+                "max_steps": self.registry.workflows[workflow_id].limits.get("max_steps", 20),
+                "max_loops": self.registry.workflows[workflow_id].limits.get("max_loops", 4),
+            },
+        )
+        isolated_state = self._build_isolated_workflow_state(state, workflow_id, runner_input=runner_input)
         await self._run_workflow_async(isolated_state, workflow_id, step_callback)
         state["runtime"]["step_count"] += int(isolated_state.get("runtime", {}).get("step_count", 0))
         state["runtime"]["loop_count"] += int(isolated_state.get("runtime", {}).get("loop_count", 0))
@@ -871,12 +1046,19 @@ class RuntimeEngine:
         parent_state: RuntimeState,
         agent_id: str,
         instruction: Any,
+        input_artifact_keys: Optional[list[str]] = None,
     ) -> RuntimeState:
         task_text = ""
         if isinstance(instruction, str) and instruction.strip():
             task_text = instruction.strip()
         if not task_text:
             task_text = parent_state["input"].get("user_text", "")
+        selected_input_artifacts = self._select_input_artifacts(parent_state, input_artifact_keys)
+        task_input = AgentTaskInput(
+            task_id=f"{agent_id}:{parent_state['runtime'].get('step_count', 0)}",
+            instruction=task_text,
+            input_artifacts=selected_input_artifacts,
+        )
         artifacts_topic = None
         parent_artifacts = parent_state.get("artifacts")
         if isinstance(parent_artifacts, dict):
@@ -906,7 +1088,10 @@ class RuntimeEngine:
             "artifacts": {
                 "topic": artifacts_topic,
                 "shared": {},
+                "execution_trace": [],
                 "supervisor_instruction": task_text,
+                "task_input": task_input.model_dump(),
+                **selected_input_artifacts,
             },
             "output": {
                 "final_text": None,
@@ -917,16 +1102,57 @@ class RuntimeEngine:
             },
         }
 
+    def _select_input_artifacts(
+        self,
+        parent_state: RuntimeState,
+        input_artifact_keys: Optional[list[str]],
+    ) -> dict[str, Any]:
+        parent_artifacts = parent_state.get("artifacts")
+        if not isinstance(parent_artifacts, dict):
+            return {}
+
+        excluded = {
+            "shared",
+            "supervisor_instruction",
+            "task_input",
+            "workflow_runner_input",
+            "execution_trace",
+        }
+        if input_artifact_keys:
+            picked: dict[str, Any] = {}
+            for key in input_artifact_keys:
+                if not isinstance(key, str):
+                    continue
+                clean = key.strip()
+                if not clean or clean in excluded:
+                    continue
+                if clean in parent_artifacts:
+                    picked[clean] = parent_artifacts.get(clean)
+            return picked
+
+        return {
+            key: value
+            for key, value in parent_artifacts.items()
+            if key not in excluded
+        }
+
     def _build_isolated_workflow_state(
         self,
         parent_state: RuntimeState,
         workflow_id: str,
+        runner_input: Optional[WorkflowRunnerInput] = None,
     ) -> RuntimeState:
         user_text = parent_state["input"].get("user_text", "")
         artifacts_topic = None
         parent_artifacts = parent_state.get("artifacts")
         if isinstance(parent_artifacts, dict):
             artifacts_topic = parent_artifacts.get("topic")
+        if runner_input is None:
+            runner_input = WorkflowRunnerInput(
+                workflow_id=workflow_id,
+                instruction=user_text,
+                seed_artifacts=self._select_input_artifacts(parent_state, input_artifact_keys=None),
+            )
         return {
             "input": {
                 "user_text": user_text,
@@ -952,6 +1178,9 @@ class RuntimeEngine:
             "artifacts": {
                 "topic": artifacts_topic,
                 "shared": {},
+                "execution_trace": [],
+                "workflow_runner_input": runner_input.model_dump(),
+                **runner_input.seed_artifacts,
             },
             "output": {
                 "final_text": None,
@@ -1066,13 +1295,19 @@ class RuntimeEngine:
                 for key, value in isolated_artifacts.items()
                 if key not in {"topic", "shared", "supervisor_instruction"}
             }
+        workflow_output = WorkflowRunnerOutput(
+            status="success" if text else "partial",
+            final_text=text or "",
+            artifacts=artifacts_patch,
+            trace=[],
+        )
         return {
             "source_kind": "workflow",
             "source_id": workflow_id,
-            "output_text": text or "",
+            "output_text": workflow_output.final_text,
             "parsed": parsed,
             "tool_outputs": tool_outputs,
-            "artifacts_patch": artifacts_patch,
+            "artifacts_patch": workflow_output.artifacts,
         }
 
     def _deliver_execution_result_to_supervisor(
@@ -1177,7 +1412,10 @@ class RuntimeEngine:
         artifacts = state.get("artifacts", {})
         return {
             "user_text": state["input"].get("user_text", ""),
-            "messages": self._messages_to_text(state["context"].get("messages", [])),
+            "messages": self._context_facility.messages_to_text(
+                state["context"].get("messages", []),
+                scope="default",
+            ),
             "memory_summary": state["context"].get("memory_summary", ""),
             "last_model_output": state["io"].get("last_model_output", ""),
             "last_tool_outputs": json.dumps(state["io"].get("last_tool_outputs", []), ensure_ascii=False),
@@ -1263,6 +1501,15 @@ class RuntimeEngine:
             return llm
 
     def _available_agents(self, supervisor_spec: AgentSpec) -> list[str]:
+        subagents = getattr(self.registry, "subagents", None)
+        if isinstance(subagents, dict) and subagents:
+            return sorted(
+                [
+                    agent_id
+                    for agent_id in subagents.keys()
+                    if agent_id != supervisor_spec.id and not agent_id.endswith("_router")
+                ]
+            )
         return sorted(
             [
                 agent_id
@@ -1274,6 +1521,73 @@ class RuntimeEngine:
     def _available_workflows(self) -> list[str]:
         return sorted(self.registry.workflows.keys())
 
+    def _agent_capabilities(self, supervisor_spec: AgentSpec) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for agent_id in self._available_agents(supervisor_spec):
+            spec = self.registry.agents.get(agent_id)
+            if spec is None:
+                continue
+            rows.append(
+                {
+                    "id": spec.id,
+                    "name": spec.name,
+                    "mode": spec.mode,
+                    "tools": list(spec.tools),
+                }
+            )
+        return rows
+
+    def _workflow_capabilities(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for workflow_id in self._available_workflows():
+            spec = self.registry.workflows.get(workflow_id)
+            if spec is None:
+                continue
+            rows.append(
+                {
+                    "id": spec.id,
+                    "name": spec.name,
+                    "entry_node": spec.entry_node,
+                    "node_count": len(spec.nodes),
+                }
+            )
+        return rows
+
+    def _append_execution_trace(
+        self,
+        state: RuntimeState,
+        *,
+        action: str,
+        target: Optional[str],
+        reason: str,
+        instruction: str,
+    ) -> None:
+        artifacts = state.get("artifacts")
+        if not isinstance(artifacts, dict):
+            artifacts = {}
+            state["artifacts"] = artifacts
+
+        last_model_output = state.get("io", {}).get("last_model_output")
+        tool_outputs = state.get("io", {}).get("last_tool_outputs")
+        tool_count = len(tool_outputs) if isinstance(tool_outputs, list) else 0
+        self._context_facility.append_trace(
+            artifacts,
+            entry={
+                "step_count": int(state.get("runtime", {}).get("step_count", 0)),
+                "action": action,
+                "target": target,
+                "reason": (reason or "")[: self._context_facility.policy.trace_reason_chars],
+                "instruction": (instruction or "")[: self._context_facility.policy.trace_instruction_chars],
+                "tool_outputs_count": tool_count,
+                "last_model_output_preview": (last_model_output or "")[
+                    : self._context_facility.policy.trace_output_preview_chars
+                ]
+                if isinstance(last_model_output, str)
+                else "",
+            },
+            trace_key="execution_trace",
+        )
+
     def _build_supervisor_payload(
         self,
         *,
@@ -1284,14 +1598,33 @@ class RuntimeEngine:
     ) -> Dict[str, Any]:
         available_agents = self._available_agents(supervisor_spec)
         available_workflows = self._available_workflows()
+        agent_capabilities = self._agent_capabilities(supervisor_spec)
+        workflow_capabilities = self._workflow_capabilities()
+        artifacts = state.get("artifacts", {})
+        compact_artifacts = self._context_facility.compact_artifacts(
+            artifacts if isinstance(artifacts, dict) else {},
+            excluded_keys={"shared", "execution_trace", "task_input", "workflow_runner_input"},
+        )
+        recent_steps = self._context_facility.recent_trace(
+            artifacts if isinstance(artifacts, dict) else {},
+            trace_key="execution_trace",
+        )
         return {
             "user_text": state["input"].get("user_text", ""),
-            "messages": self._messages_to_text(state["context"].get("messages", [])),
-            "artifacts": json.dumps(state.get("artifacts", {}), ensure_ascii=False, default=str),
+            "messages": self._context_facility.messages_to_text(
+                state["context"].get("messages", []),
+                scope="supervisor",
+            ),
+            "memory_summary": state["context"].get("memory_summary", ""),
+            "artifacts": json.dumps(artifacts, ensure_ascii=False, default=str),
+            "artifacts_compact": json.dumps(compact_artifacts, ensure_ascii=False, default=str),
             "last_model_output": state["io"].get("last_model_output", ""),
             "last_tool_outputs": json.dumps(state["io"].get("last_tool_outputs", []), ensure_ascii=False, default=str),
             "available_agents": json.dumps(available_agents, ensure_ascii=False),
             "available_workflows": json.dumps(available_workflows, ensure_ascii=False),
+            "agent_capabilities": json.dumps(agent_capabilities, ensure_ascii=False, default=str),
+            "workflow_capabilities": json.dumps(workflow_capabilities, ensure_ascii=False, default=str),
+            "recent_steps": json.dumps(recent_steps, ensure_ascii=False, default=str),
             "requested_workflow_id": requested_workflow_id or "",
             "step_count": state["runtime"].get("step_count", 0),
             "loop_count": state["runtime"].get("loop_count", 0),
@@ -1321,6 +1654,12 @@ class RuntimeEngine:
 
     def _resolve_supervisor_spec(self) -> Optional[AgentSpec]:
         preferred = os.getenv(_SUPERVISOR_AGENT_ENV, _DEFAULT_SUPERVISOR_AGENT_ID)
+        system_agents = getattr(self.registry, "system_agents", None)
+        if isinstance(system_agents, dict):
+            if preferred in system_agents:
+                return system_agents[preferred]
+            if _DEFAULT_SUPERVISOR_AGENT_ID in system_agents:
+                return system_agents[_DEFAULT_SUPERVISOR_AGENT_ID]
         if preferred in self.registry.agents:
             return self.registry.agents[preferred]
         if "supervisor" in self.registry.agents:
@@ -1360,6 +1699,8 @@ class RuntimeEngine:
         return {
             "ok": len(errors) == 0,
             "loaded_agents": len(self.registry.agents),
+            "loaded_subagents": len(getattr(self.registry, "subagents", {})),
+            "loaded_system_agents": len(getattr(self.registry, "system_agents", {})),
             "loaded_workflows": len(self.registry.workflows),
             "supervisor_agent_id": supervisor.id if supervisor else None,
             "default_llm_type": default_llm_type,
@@ -1406,14 +1747,6 @@ class RuntimeEngine:
             if isinstance(message, ToolMessage):
                 outputs.append(message.content)
         return outputs
-
-    def _messages_to_text(self, messages: list[BaseMessage]) -> str:
-        lines: list[str] = []
-        for message in messages[-self._chain_context_messages_window:]:
-            role = message.__class__.__name__.replace("Message", "").lower() or "message"
-            content = self._coerce_text(message)
-            lines.append(f"{role}: {content}")
-        return "\n".join(lines)
 
     def _coerce_text(self, raw: Any) -> str:
         if raw is None:
@@ -1473,6 +1806,39 @@ class RuntimeEngine:
 
         return None
 
+    def _normalize_agent_parsed_payload(
+        self,
+        text: str,
+        parsed: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        payload = dict(parsed or {})
+        status = payload.get("status")
+        if status not in {"success", "needs_clarification", "failed"}:
+            status = "success"
+        final_text = payload.get("final_text")
+        if not isinstance(final_text, str) or not final_text.strip():
+            final_text = text
+        artifacts = payload.get("artifacts")
+        if not isinstance(artifacts, dict):
+            artifacts = {}
+        confidence = payload.get("confidence", 0.5)
+        errors = payload.get("errors", [])
+        try:
+            model = AgentTaskOutput.model_validate(
+                {
+                    "status": status,
+                    "final_text": final_text,
+                    "artifacts": artifacts,
+                    "confidence": confidence,
+                    "errors": errors,
+                }
+            )
+        except Exception:
+            model = AgentTaskOutput(status="failed", final_text=text, artifacts={}, confidence=0.0, errors=[])
+        merged = dict(payload)
+        merged.update(model.model_dump())
+        return merged
+
     def _cache_metrics(self) -> Dict[str, int]:
         with self._llm_cache_lock:
             return {
@@ -1504,18 +1870,6 @@ class RuntimeEngine:
                 "artifacts": state.get("artifacts", {}),
             },
         }
-
-
-def _read_int_env(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        return default
-
-
 def _resolve_openai_compat_user_agent(base_url: str) -> str:
     normalized_base_url = (base_url or "").strip()
     if not normalized_base_url:
