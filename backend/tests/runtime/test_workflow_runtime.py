@@ -170,7 +170,7 @@ def proposal_workflow_spec():
                 {"from": "strict", "to": "synthesizer", "condition": "only"},
                 {"from": "reporter", "to": "end"},
             ],
-            "limits": {"max_steps": 5, "max_loops": 3},
+            "limits": {"max_steps": 8, "max_loops": 3},
         }
     )
 
@@ -245,6 +245,122 @@ def test_next_node_supports_expression_condition():
     runtime = WorkflowRuntime(spec, agent_runner=None)
     next_node = runtime.next_node("start", {"artifacts": {"score": 0.9}})
     assert next_node == "good"
+
+
+def test_next_node_loop_saturated_falls_back_to_first_edge():
+    spec = WorkflowSpec.model_validate(
+        {
+            "id": "loop_saturated_fallback",
+            "name": "Loop Saturated Fallback",
+            "entry_node": "critic",
+            "nodes": {
+                "critic": {"type": "agent", "agent_id": "critic"},
+                "export": {"type": "terminal"},
+                "revise": {"type": "terminal"},
+            },
+            "edges": [
+                {"from": "critic", "to": "export", "condition": {"field": "artifacts.quality_report.decision", "equals": "approve"}},
+                {"from": "critic", "to": "revise", "condition": {"field": "artifacts.quality_report.decision", "equals": "revise"}},
+            ],
+            "limits": {"max_loops": 2},
+        }
+    )
+    runtime = WorkflowRuntime(spec, agent_runner=None)
+    saturated_state = {
+        "runtime": {"loop_count": 2},
+        "artifacts": {"quality_report": {"decision": "revise"}},
+    }
+    next_node = runtime.next_node("critic", saturated_state)
+    assert next_node == "export"
+
+
+def test_is_node_visit_saturated_uses_max_search_alias():
+    spec = WorkflowSpec.model_validate(
+        {
+            "id": "node_limit_alias",
+            "name": "Node Limit Alias",
+            "entry_node": "search",
+            "nodes": {
+                "search": {"type": "agent", "agent_id": "searcher"},
+                "read": {"type": "agent", "agent_id": "reader"},
+                "end": {"type": "terminal"},
+            },
+            "edges": [
+                {"from": "search", "to": "read"},
+                {"from": "read", "to": "end"},
+            ],
+            "limits": {"max_steps": 6, "max_loops": 1, "max_search": 2},
+        }
+    )
+    runtime = WorkflowRuntime(spec, agent_runner=None)
+
+    assert runtime.is_node_visit_saturated("search", {"search": 2}) is False
+    assert runtime.is_node_visit_saturated("search", {"search": 3}) is True
+
+
+def test_next_node_for_saturated_node_avoids_self_loop():
+    spec = WorkflowSpec.model_validate(
+        {
+            "id": "node_limit_self_loop",
+            "name": "Node Limit Self Loop",
+            "entry_node": "search",
+            "nodes": {
+                "search": {"type": "agent", "agent_id": "searcher"},
+                "read": {"type": "agent", "agent_id": "reader"},
+                "end": {"type": "terminal"},
+            },
+            "edges": [
+                {"from": "search", "to": "search", "condition": {"field": "x", "equals": 1}},
+                {"from": "search", "to": "read"},
+                {"from": "read", "to": "end"},
+            ],
+            "limits": {"max_steps": 6, "max_loops": 1, "max_search": 1},
+        }
+    )
+    runtime = WorkflowRuntime(spec, agent_runner=None)
+    assert runtime.next_node_for_saturated_node("search") == "read"
+
+
+def test_workflow_spec_rejects_sum_of_node_caps_exceeding_max_steps():
+    with pytest.raises(ValueError, match="sum of node visit limits must be <= limits.max_steps"):
+        WorkflowSpec.model_validate(
+            {
+                "id": "bad_caps",
+                "name": "Bad Caps",
+                "entry_node": "planner",
+                "nodes": {
+                    "planner": {"type": "agent", "agent_id": "planner"},
+                    "search": {"type": "agent", "agent_id": "search"},
+                    "end": {"type": "terminal"},
+                },
+                "edges": [
+                    {"from": "planner", "to": "search"},
+                    {"from": "search", "to": "end"},
+                ],
+                "limits": {"max_steps": 3, "max_loops": 1, "max_planner": 2, "max_search": 2},
+            }
+        )
+
+
+def test_workflow_spec_rejects_path_plus_loops_exceeding_max_steps():
+    with pytest.raises(ValueError, match="max_steps must cover baseline path plus max_loops"):
+        WorkflowSpec.model_validate(
+            {
+                "id": "bad_loop_budget",
+                "name": "Bad Loop Budget",
+                "entry_node": "planner",
+                "nodes": {
+                    "planner": {"type": "agent", "agent_id": "planner"},
+                    "search": {"type": "agent", "agent_id": "search"},
+                    "end": {"type": "terminal"},
+                },
+                "edges": [
+                    {"from": "planner", "to": "search"},
+                    {"from": "search", "to": "end"},
+                ],
+                "limits": {"max_steps": 3, "max_loops": 2},
+            }
+        )
 
 
 def test_expression_condition_with_missing_field_falls_back():

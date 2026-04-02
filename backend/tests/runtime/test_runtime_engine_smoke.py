@@ -4,7 +4,7 @@ import asyncio
 import json
 import pytest
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from src.application.runtime.config_registry import ConfigRegistry
 from src.application.runtime.runtime_engine import RuntimeEngine
@@ -171,6 +171,9 @@ def test_runtime_engine_supervisor_runs_subagent_then_replies(monkeypatch, tmp_p
     assert len(researcher_payloads) == 1
     payload = researcher_payloads[0]
     assert payload["user_text"] == "collect three references"
+    assert "[TASK_INPUT_V1]" in payload["messages"]
+    assert '"protocol": "task_input_v1"' in payload["messages"]
+    assert '"instruction": "collect three references"' in payload["messages"]
     assert "collect three references" in payload["messages"]
     assert "hello" not in payload["messages"]
     artifacts = json.loads(payload["artifacts"])
@@ -185,6 +188,10 @@ def test_runtime_engine_supervisor_runs_subagent_then_replies(monkeypatch, tmp_p
 def test_runtime_engine_supervisor_starts_workflow(monkeypatch, tmp_path):
     engine = RuntimeEngine(registry=_registry(tmp_path))
     monkeypatch.setattr(engine, "_resolve_llm", lambda spec: object())
+    monkeypatch.setattr(
+        "src.application.runtime.runtime_engine.load_ltm_profile_for_supervisor",
+        lambda user_id: '{"profile":"ok"}',
+    )
 
     supervisor_calls = {"count": 0}
     reporter_calls = {"count": 0}
@@ -227,6 +234,7 @@ def test_runtime_engine_supervisor_starts_workflow(monkeypatch, tmp_path):
     assert finalize_payload["requested_workflow_id"] == "wf1"
     assert "available_agents" in finalize_payload
     assert "available_workflows" in finalize_payload
+    assert finalize_payload["ltm_profile"] == '{"profile":"ok"}'
     assert "step_count" in finalize_payload
     assert "loop_count" in finalize_payload
 
@@ -283,6 +291,162 @@ def test_runtime_engine_workflow_loop_counts_entry_revisit(monkeypatch, tmp_path
     with pytest.raises(RuntimeError, match="max_steps exceeded"):
         engine.run_turn(state, requested_workflow_id="loop_wf")
     assert state["runtime"]["loop_count"] >= 1
+
+
+def test_runtime_engine_workflow_node_cap_falls_forward(monkeypatch, tmp_path):
+    registry = ConfigRegistry(config_root=tmp_path)
+    registry.agents = {
+        "supervisor": AgentSpec.model_validate(
+            {
+                "id": "supervisor",
+                "name": "Supervisor",
+                "mode": "react",
+                "system_prompt": "supervisor",
+                "tools": [],
+                "llm": {"name": "openai_default"},
+            }
+        ),
+        "searcher": AgentSpec.model_validate(
+            {
+                "id": "searcher",
+                "name": "Searcher",
+                "mode": "chain",
+                "system_prompt": "search",
+                "tools": [],
+                "llm": {"name": "openai_default"},
+            }
+        ),
+        "reader": AgentSpec.model_validate(
+            {
+                "id": "reader",
+                "name": "Reader",
+                "mode": "chain",
+                "system_prompt": "read",
+                "tools": [],
+                "llm": {"name": "openai_default"},
+            }
+        ),
+    }
+    registry.workflows = {
+        "cap_wf": WorkflowSpec.model_validate(
+            {
+                "id": "cap_wf",
+                "name": "cap_wf",
+                "entry_node": "search",
+                "nodes": {
+                    "search": {"type": "agent", "agent_id": "searcher"},
+                    "read": {"type": "agent", "agent_id": "reader"},
+                    "end": {"type": "terminal"},
+                },
+                "edges": [
+                    {"from": "search", "to": "search"},
+                    {"from": "search", "to": "read"},
+                    {"from": "read", "to": "end"},
+                ],
+                "limits": {"max_steps": 10, "max_loops": 6, "max_search": 2},
+            }
+        )
+    }
+    engine = RuntimeEngine(registry=registry)
+    monkeypatch.setattr(engine, "_resolve_llm", lambda spec: object())
+
+    call_counts = {"searcher": 0, "reader": 0}
+
+    def _fake_build(spec, llm, tool_resolver):
+        del llm, tool_resolver
+        if spec.id == "searcher":
+            def _invoke(payload):
+                del payload
+                call_counts["searcher"] += 1
+                return "search loop"
+
+            return _FakeRunnable(_invoke)
+        if spec.id == "reader":
+            def _invoke(payload):
+                del payload
+                call_counts["reader"] += 1
+                return "reader done"
+
+            return _FakeRunnable(_invoke)
+        raise AssertionError(f"Unexpected spec id: {spec.id}")
+
+    monkeypatch.setattr("src.application.runtime.runtime_engine.build_agent_from_spec", _fake_build)
+
+    result = engine.run_turn(_state(), requested_workflow_id="cap_wf")
+    assert result["success"] is True
+    assert result["message"] == "reader done"
+    assert call_counts["searcher"] == 2
+    assert call_counts["reader"] == 1
+
+
+def test_runtime_engine_workflow_react_payload_uses_task_input_protocol(monkeypatch, tmp_path):
+    registry = ConfigRegistry(config_root=tmp_path)
+    registry.agents = {
+        "supervisor": AgentSpec.model_validate(
+            {
+                "id": "supervisor",
+                "name": "Supervisor",
+                "mode": "react",
+                "system_prompt": "supervisor",
+                "tools": [],
+                "llm": {"name": "openai_default"},
+            }
+        ),
+        "searcher": AgentSpec.model_validate(
+            {
+                "id": "searcher",
+                "name": "Searcher",
+                "mode": "react",
+                "system_prompt": "search",
+                "tools": [],
+                "llm": {"name": "openai_default"},
+            }
+        ),
+    }
+    registry.workflows = {
+        "wf_react_protocol": WorkflowSpec.model_validate(
+            {
+                "id": "wf_react_protocol",
+                "name": "wf_react_protocol",
+                "entry_node": "search_node",
+                "nodes": {
+                    "search_node": {"type": "agent", "agent_id": "searcher"},
+                    "end": {"type": "terminal"},
+                },
+                "edges": [{"from": "search_node", "to": "end"}],
+                "limits": {"max_steps": 5, "max_loops": 2},
+            }
+        )
+    }
+    engine = RuntimeEngine(registry=registry)
+    monkeypatch.setattr(engine, "_resolve_llm", lambda spec: object())
+
+    payloads: list[dict] = []
+
+    def _fake_build(spec, llm, tool_resolver):
+        del llm, tool_resolver
+        if spec.id == "searcher":
+            def _invoke(payload):
+                payloads.append(payload)
+                return {"messages": payload["messages"] + [AIMessage(content='{"final_text":"ok"}')]}
+
+            return _FakeRunnable(_invoke)
+        raise AssertionError(f"Unexpected spec id: {spec.id}")
+
+    monkeypatch.setattr("src.application.runtime.runtime_engine.build_agent_from_spec", _fake_build)
+
+    state = _state()
+    state["artifacts"]["paper_pool"] = [{"title": "Paper A"}]
+    result = engine.run_turn(state, requested_workflow_id="wf_react_protocol")
+    assert result["success"] is True
+    assert payloads
+    first_messages = payloads[0]["messages"]
+    assert first_messages
+    first_text = str(first_messages[0].content)
+    assert "[TASK_INPUT_V1]" in first_text
+    assert '"protocol": "task_input_v1"' in first_text
+    assert '"node_name": "search_node"' in first_text
+    assert '"paper_pool"' in first_text
 
 
 def test_apply_agent_output_recovers_when_shared_is_non_dict(tmp_path):

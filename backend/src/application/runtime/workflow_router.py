@@ -16,6 +16,7 @@ class WorkflowRuntime:
     def __init__(self, spec: WorkflowSpec, agent_runner: Any):
         self.spec = spec
         self.agent_runner = agent_runner
+        self._node_visit_limits = self.spec.node_visit_limits()
 
     def allowed_next_nodes(self, current_node: str) -> list[str]:
         return [edge["to"] for edge in self.spec.edges if edge["from"] == current_node]
@@ -33,6 +34,17 @@ class WorkflowRuntime:
             raise RuntimeError(f"No valid transition from node: {current_node}")
 
         current_state = state or {}
+
+        if self._loop_saturated(current_state):
+            fallback = self._preferred_fallback_edge(edges)
+            logger.warning(
+                "workflow.loop_saturated_fallback workflow_id=%s current_node=%s to=%s",
+                self.spec.id,
+                current_node,
+                fallback["to"],
+            )
+            return fallback["to"]
+
         conditional_edges = [edge for edge in edges if edge.get("condition") is not None]
 
         for edge in conditional_edges:
@@ -47,8 +59,8 @@ class WorkflowRuntime:
         return edges[0]["to"]
 
     def enforce_limits(self, state: dict[str, Any]) -> None:
-        max_steps = self.spec.limits.get("max_steps", 30)
-        max_loops = self.spec.limits.get("max_loops", 6)
+        max_steps = int(self.spec.limits.get("max_steps", 30))
+        max_loops = self._resolved_max_loops(max_steps)
         if state.get("_step_count", 0) >= max_steps:
             raise RuntimeError("max_steps exceeded")
         if state.get("_loop_count", 0) >= max_loops:
@@ -58,6 +70,55 @@ class WorkflowRuntime:
                 state.get("_loop_count", 0),
                 max_loops,
             )
+
+    def is_node_visit_saturated(self, node_name: str, visit_counts: dict[str, int]) -> bool:
+        limit = self._node_visit_limits.get(node_name)
+        if limit is None:
+            return False
+        return int(visit_counts.get(node_name, 0)) > int(limit)
+
+    def next_node_for_saturated_node(self, current_node: str) -> str:
+        edges = [edge for edge in self.spec.edges if edge["from"] == current_node]
+        if not edges:
+            raise RuntimeError(f"No valid transition from node: {current_node}")
+        fallback = self._preferred_fallback_edge(edges, avoid_node=current_node)
+        return fallback["to"]
+
+    def _loop_saturated(self, state: dict[str, Any]) -> bool:
+        max_steps = int(self.spec.limits.get("max_steps", 30))
+        max_loops = self._resolved_max_loops(max_steps)
+        if max_loops < 0:
+            return False
+        loop_count = state.get("_loop_count")
+        if not isinstance(loop_count, int):
+            runtime = state.get("runtime")
+            if isinstance(runtime, dict):
+                loop_count = runtime.get("loop_count")
+        if not isinstance(loop_count, int):
+            return False
+        return loop_count >= max_loops
+
+    def _resolved_max_loops(self, max_steps: int) -> int:
+        if "max_loops" in self.spec.limits:
+            return int(self.spec.limits.get("max_loops", 6))
+        return min(6, max_steps)
+
+    @staticmethod
+    def _preferred_fallback_edge(
+        edges: list[dict[str, Any]],
+        avoid_node: str | None = None,
+    ) -> dict[str, Any]:
+        if avoid_node:
+            for edge in edges:
+                if edge.get("condition") is None and edge.get("to") != avoid_node:
+                    return edge
+            for edge in edges:
+                if edge.get("to") != avoid_node:
+                    return edge
+        for edge in edges:
+            if edge.get("condition") is None:
+                return edge
+        return edges[0]
 
     def _condition_matches(self, condition: Any, state: dict[str, Any]) -> bool:
         if condition is None:

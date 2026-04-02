@@ -71,4 +71,5 @@ edges:
 limits:
   max_steps: 30
   max_loops: 8
+  max_search: 4
   timeout_ms: 900000

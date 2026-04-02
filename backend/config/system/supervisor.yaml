@@ -15,6 +15,7 @@ system_prompt: |
   available_workflows: {available_workflows}
   agent_capabilities: {agent_capabilities}
   workflow_capabilities: {workflow_capabilities}
+  ltm_profile: {ltm_profile}
 
   ## Layer 3: Dynamic Turn Context (most changing)
   user_text: {user_text}

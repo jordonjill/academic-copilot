@@ -20,19 +20,42 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import List, Dict
+from typing import Any, List, Dict
 
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.messages import BaseMessage, HumanMessage
 
-from src.infrastructure.config.config import MEMORY_PIPELINE_ENABLED, USERS_DIR
+from src.infrastructure.config.config import (
+    LTM_FACT_MAX_CHARS,
+    LTM_MAX_ITEMS_PER_CATEGORY,
+    LTM_MEMORY_MD_MAX_CHARS,
+    LTM_PAST_TOPICS_MAX_ITEMS,
+    LTM_SUPERVISOR_PROFILE_MAX_CHARS,
+    MEMORY_PIPELINE_ENABLED,
+    USERS_DIR,
+)
 from src.infrastructure.config.prompt import LTM_EXTRACTION_PROMPT
 
 
-_MAX_PAST_TOPICS = 20  # past_topics FIFO 滚动上限
 logger = logging.getLogger(__name__)
 _USERS_ROOT = Path(USERS_DIR).expanduser().resolve()
 _USER_ID_PATTERN = re.compile(r"^(?!\.{1,2}$)[A-Za-z0-9_@.-]{1,128}$")
+_PROFILE_KEYS = (
+    "research_domains",
+    "methodologies",
+    "tools_and_frameworks",
+    "past_topics",
+    "writing_preferences",
+    "custom_facts",
+)
+_TRIM_PRIORITY = (
+    "custom_facts",
+    "past_topics",
+    "tools_and_frameworks",
+    "methodologies",
+    "research_domains",
+    "writing_preferences",
+)
 
 
 def _ltm_max_workers() -> int:
@@ -82,14 +105,7 @@ def _safe_user_memory_path(user_id: str) -> Path:
 def _load_existing_profile(user_id: str) -> Dict[str, List[str]]:
     """从 memory.md 解析现有 profile 字段（或返回空默认值）。"""
     profile_path = _safe_user_memory_path(user_id)
-    default: Dict[str, List[str]] = {
-        "research_domains": [],
-        "methodologies": [],
-        "tools_and_frameworks": [],
-        "past_topics": [],
-        "writing_preferences": [],
-        "custom_facts": [],
-    }
+    default: Dict[str, List[str]] = _empty_profile()
     if not profile_path.exists():
         return default
 
@@ -110,19 +126,25 @@ def _load_existing_profile(user_id: str) -> Dict[str, List[str]]:
         m = re.search(pattern, raw)
         if m:
             items = [line.lstrip("- ").strip() for line in m.group(1).strip().splitlines()]
-            default[key] = [i for i in items if i]
+            default[key] = _normalize_items(items, max_items=_category_cap(key))
 
     return default
 
 
 def _merge_profiles(existing: Dict[str, List[str]], new_facts: Dict[str, List[str]]) -> Dict[str, List[str]]:
-    """Union 去重追加，past_topics 保留最近 _MAX_PAST_TOPICS 条。"""
-    merged: Dict[str, List[str]] = {}
-    for key in existing:
-        combined = list(dict.fromkeys(existing.get(key, []) + new_facts.get(key, [])))
-        if key == "past_topics" and len(combined) > _MAX_PAST_TOPICS:
-            combined = combined[-_MAX_PAST_TOPICS:]
-        merged[key] = combined
+    """Union 去重追加，按每类上限保留最近条目。"""
+    merged: Dict[str, List[str]] = _empty_profile()
+    for key in _PROFILE_KEYS:
+        existing_items = existing.get(key, [])
+        new_items = new_facts.get(key, [])
+        if not isinstance(existing_items, list):
+            existing_items = []
+        if not isinstance(new_items, list):
+            new_items = []
+        merged[key] = _normalize_items(
+            [*existing_items, *new_items],
+            max_items=_category_cap(key),
+        )
     return merged
 
 
@@ -131,34 +153,42 @@ def _write_memory_md(user_id: str, profile: Dict[str, List[str]]) -> str:
     profile_path = _safe_user_memory_path(user_id)
     profile_path.parent.mkdir(parents=True, exist_ok=True)
 
+    cleaned = _normalize_profile(profile)
     now = datetime.now(UTC).isoformat()
-    lines = [
-        "# User Research Profile",
-        f"*Last Updated: {now}*",
-        "",
-        "## Research Domains",
-        *[f"- {item}" for item in profile.get("research_domains", [])],
-        "",
-        "## Preferred Methodologies",
-        *[f"- {item}" for item in profile.get("methodologies", [])],
-        "",
-        "## Known Tools & Frameworks",
-        *[f"- {item}" for item in profile.get("tools_and_frameworks", [])],
-        "",
-        "## Past Topics",
-        *[f"- {item}" for item in profile.get("past_topics", [])],
-        "",
-        "## Writing Preferences",
-        *[f"- {item}" for item in profile.get("writing_preferences", [])],
-        "",
-        "## Custom Facts",
-        *[f"- {item}" for item in profile.get("custom_facts", [])],
-        "",
-    ]
-    content = "\n".join(lines)
+    content = _render_memory_md(cleaned, timestamp_iso=now)
+    while len(content) > LTM_MEMORY_MD_MAX_CHARS and _profile_has_any_item(cleaned):
+        if not _drop_oldest_by_priority(cleaned):
+            break
+        content = _render_memory_md(cleaned, timestamp_iso=now)
     with profile_path.open("w", encoding="utf-8") as f:
         f.write(content)
     return content
+
+
+def load_ltm_profile_for_supervisor(user_id: str) -> str:
+    """Load compact LTM profile text for supervisor prompt injection."""
+    if not MEMORY_PIPELINE_ENABLED:
+        return ""
+    try:
+        profile = _load_existing_profile(user_id)
+    except Exception:
+        logger.exception("[LTM] Failed to load memory profile for user %s", user_id)
+        return ""
+
+    compact = {key: value for key, value in profile.items() if isinstance(value, list) and value}
+    if not compact:
+        return ""
+
+    trimmed = {key: list(value) for key, value in compact.items()}
+    text = json.dumps(trimmed, ensure_ascii=False)
+    while len(text) > LTM_SUPERVISOR_PROFILE_MAX_CHARS and _profile_has_any_item(trimmed):
+        if not _drop_oldest_by_priority(trimmed):
+            break
+        text = json.dumps({k: v for k, v in trimmed.items() if v}, ensure_ascii=False)
+
+    if len(text) > LTM_SUPERVISOR_PROFILE_MAX_CHARS:
+        text = text[:LTM_SUPERVISOR_PROFILE_MAX_CHARS]
+    return text
 
 
 async def extract_and_update_ltm(
@@ -220,3 +250,94 @@ async def extract_and_update_ltm(
 
     except Exception as e:
         logger.exception("[LTM] Extraction failed for user %s: %s", user_id, e)
+
+
+def _empty_profile() -> Dict[str, List[str]]:
+    return {key: [] for key in _PROFILE_KEYS}
+
+
+def _category_cap(key: str) -> int:
+    if key == "past_topics":
+        return LTM_PAST_TOPICS_MAX_ITEMS
+    return LTM_MAX_ITEMS_PER_CATEGORY
+
+
+def _normalize_fact_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    if len(text) > LTM_FACT_MAX_CHARS:
+        text = text[:LTM_FACT_MAX_CHARS].rstrip()
+    return text
+
+
+def _normalize_items(items: List[Any], *, max_items: int) -> List[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = _normalize_fact_text(item)
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(text)
+    if len(normalized) > max_items:
+        normalized = normalized[-max_items:]
+    return normalized
+
+
+def _normalize_profile(profile: Dict[str, Any]) -> Dict[str, List[str]]:
+    normalized = _empty_profile()
+    for key in _PROFILE_KEYS:
+        raw_items = profile.get(key, [])
+        if not isinstance(raw_items, list):
+            raw_items = []
+        normalized[key] = _normalize_items(raw_items, max_items=_category_cap(key))
+    return normalized
+
+
+def _render_memory_md(profile: Dict[str, List[str]], *, timestamp_iso: str) -> str:
+    lines = [
+        "# User Research Profile",
+        f"*Last Updated: {timestamp_iso}*",
+        "",
+        "## Research Domains",
+        *[f"- {item}" for item in profile.get("research_domains", [])],
+        "",
+        "## Preferred Methodologies",
+        *[f"- {item}" for item in profile.get("methodologies", [])],
+        "",
+        "## Known Tools & Frameworks",
+        *[f"- {item}" for item in profile.get("tools_and_frameworks", [])],
+        "",
+        "## Past Topics",
+        *[f"- {item}" for item in profile.get("past_topics", [])],
+        "",
+        "## Writing Preferences",
+        *[f"- {item}" for item in profile.get("writing_preferences", [])],
+        "",
+        "## Custom Facts",
+        *[f"- {item}" for item in profile.get("custom_facts", [])],
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _profile_has_any_item(profile: Dict[str, List[str]]) -> bool:
+    for key in _PROFILE_KEYS:
+        items = profile.get(key, [])
+        if isinstance(items, list) and items:
+            return True
+    return False
+
+
+def _drop_oldest_by_priority(profile: Dict[str, List[str]]) -> bool:
+    for key in _TRIM_PRIORITY:
+        items = profile.get(key, [])
+        if isinstance(items, list) and items:
+            items.pop(0)
+            return True
+    return False

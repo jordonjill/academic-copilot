@@ -31,6 +31,7 @@ from src.application.runtime.io_models import (
 from src.application.runtime.state_types import RuntimeState
 from src.application.runtime.spec_models import AgentSpec
 from src.application.runtime.workflow_router import WorkflowRuntime
+from src.infrastructure.memory.ltm import load_ltm_profile_for_supervisor
 from src.infrastructure.tools.registry import get_tool
 
 
@@ -720,6 +721,29 @@ class RuntimeEngine:
             if not isinstance(agent_id, str):
                 raise RuntimeError(f"Invalid agent_id for node: {current_node}")
 
+            if runtime.is_node_visit_saturated(current_node, visit_counts):
+                next_node = runtime.next_node_for_saturated_node(current_node)
+                if next_node == current_node:
+                    raise RuntimeError(
+                        f"Node visit limit reached but no forward edge available for node: {current_node}"
+                    )
+                logger.warning(
+                    "workflow.node_visit_saturated_fallback workflow_id=%s current_node=%s to=%s "
+                    "visit_count=%s limit=%s",
+                    workflow_id,
+                    current_node,
+                    next_node,
+                    visit_counts.get(current_node, 0),
+                    spec.limits.get(f"max_visits_{current_node}", spec.limits.get(f"max_{current_node}")),
+                )
+                runtime.assert_transition_allowed(current_node, next_node)
+                state["runtime"]["current_node"] = next_node
+                if visit_counts.get(next_node, 0) > 0:
+                    state["runtime"]["loop_count"] += 1
+                visit_counts[next_node] = visit_counts.get(next_node, 0) + 1
+                current_node = next_node
+                continue
+
             self._execute_workflow_agent_isolated(state, current_node, agent_id)
             state["runtime"]["step_count"] += 1
 
@@ -797,6 +821,29 @@ class RuntimeEngine:
             if not isinstance(agent_id, str):
                 raise RuntimeError(f"Invalid agent_id for node: {current_node}")
 
+            if runtime.is_node_visit_saturated(current_node, visit_counts):
+                next_node = runtime.next_node_for_saturated_node(current_node)
+                if next_node == current_node:
+                    raise RuntimeError(
+                        f"Node visit limit reached but no forward edge available for node: {current_node}"
+                    )
+                logger.warning(
+                    "workflow.node_visit_saturated_fallback workflow_id=%s current_node=%s to=%s "
+                    "visit_count=%s limit=%s",
+                    workflow_id,
+                    current_node,
+                    next_node,
+                    visit_counts.get(current_node, 0),
+                    spec.limits.get(f"max_visits_{current_node}", spec.limits.get(f"max_{current_node}")),
+                )
+                runtime.assert_transition_allowed(current_node, next_node)
+                state["runtime"]["current_node"] = next_node
+                if visit_counts.get(next_node, 0) > 0:
+                    state["runtime"]["loop_count"] += 1
+                visit_counts[next_node] = visit_counts.get(next_node, 0) + 1
+                current_node = next_node
+                continue
+
             await self._execute_workflow_agent_isolated_async(state, current_node, agent_id)
             state["runtime"]["step_count"] += 1
 
@@ -834,6 +881,7 @@ class RuntimeEngine:
             agent_id,
             instruction,
             input_artifact_keys=None,
+            node_name=node_name,
         )
         self._execute_agent(isolated_state, node_name, agent_id)
         result = self._collect_subagent_execution_result(isolated_state, agent_id)
@@ -851,6 +899,7 @@ class RuntimeEngine:
             agent_id,
             instruction,
             input_artifact_keys=None,
+            node_name=node_name,
         )
         await self._execute_agent_async(isolated_state, node_name, agent_id)
         result = self._collect_subagent_execution_result(isolated_state, agent_id)
@@ -863,13 +912,7 @@ class RuntimeEngine:
         agent_id: str,
     ) -> str:
         user_text = state.get("input", {}).get("user_text", "")
-        artifacts = self._select_input_artifacts(state, input_artifact_keys=None)
-        artifact_text = json.dumps(artifacts, ensure_ascii=False, default=str)
-        return (
-            f"[workflow_node={node_name} agent={agent_id}] "
-            f"User request: {user_text}\n"
-            f"Current artifacts: {artifact_text}"
-        )
+        return f"[workflow_node={node_name} agent={agent_id}] User request: {user_text}"
 
     def _execute_agent(self, state: RuntimeState, node_name: str, agent_id: str) -> None:
         if agent_id not in self.registry.agents:
@@ -975,6 +1018,7 @@ class RuntimeEngine:
             agent_id,
             instruction,
             input_artifact_keys=input_artifact_keys,
+            node_name=agent_id,
         )
         self._execute_agent(isolated_state, agent_id, agent_id)
         result = self._collect_subagent_execution_result(isolated_state, agent_id)
@@ -992,6 +1036,7 @@ class RuntimeEngine:
             agent_id,
             instruction,
             input_artifact_keys=input_artifact_keys,
+            node_name=agent_id,
         )
         await self._execute_agent_async(isolated_state, agent_id, agent_id)
         result = self._collect_subagent_execution_result(isolated_state, agent_id)
@@ -1047,6 +1092,7 @@ class RuntimeEngine:
         agent_id: str,
         instruction: Any,
         input_artifact_keys: Optional[list[str]] = None,
+        node_name: Optional[str] = None,
     ) -> RuntimeState:
         task_text = ""
         if isinstance(instruction, str) and instruction.strip():
@@ -1059,6 +1105,12 @@ class RuntimeEngine:
             instruction=task_text,
             input_artifacts=selected_input_artifacts,
         )
+        instruction_envelope = self._build_task_input_envelope(
+            task_input,
+            agent_id=agent_id,
+            node_name=node_name or agent_id,
+            runtime_mode=str(parent_state.get("runtime", {}).get("mode", "subagent")),
+        )
         artifacts_topic = None
         parent_artifacts = parent_state.get("artifacts")
         if isinstance(parent_artifacts, dict):
@@ -1070,7 +1122,7 @@ class RuntimeEngine:
                 "session_id": parent_state["input"].get("session_id", ""),
             },
             "context": {
-                "messages": [HumanMessage(content=task_text)],
+                "messages": [HumanMessage(content=instruction_envelope)],
                 "memory_summary": "",
             },
             "runtime": {
@@ -1101,6 +1153,27 @@ class RuntimeEngine:
                 "last_error": None,
             },
         }
+
+    def _build_task_input_envelope(
+        self,
+        task_input: AgentTaskInput,
+        *,
+        agent_id: str,
+        node_name: str,
+        runtime_mode: str,
+    ) -> str:
+        payload = {
+            "protocol": "task_input_v1",
+            "agent_id": agent_id,
+            "node_name": node_name,
+            "runtime_mode": runtime_mode,
+            "task_input": task_input.model_dump(),
+        }
+        return (
+            "[TASK_INPUT_V1]\n"
+            "Use this structured input only; treat absent fields as unavailable.\n"
+            f"{json.dumps(payload, ensure_ascii=False, default=str)}"
+        )
 
     def _select_input_artifacts(
         self,
@@ -1416,12 +1489,7 @@ class RuntimeEngine:
                 state["context"].get("messages", []),
                 scope="default",
             ),
-            "memory_summary": state["context"].get("memory_summary", ""),
-            "last_model_output": state["io"].get("last_model_output", ""),
-            "last_tool_outputs": json.dumps(state["io"].get("last_tool_outputs", []), ensure_ascii=False),
             "artifacts": json.dumps(artifacts, ensure_ascii=False, default=str),
-            "agent_id": agent_id,
-            "node_name": node_name,
             "supervisor_instruction": artifacts.get("supervisor_instruction", ""),
         }
 
@@ -1605,6 +1673,7 @@ class RuntimeEngine:
             artifacts if isinstance(artifacts, dict) else {},
             excluded_keys={"shared", "execution_trace", "task_input", "workflow_runner_input"},
         )
+        ltm_profile = load_ltm_profile_for_supervisor(str(state["input"].get("user_id", "")))
         recent_steps = self._context_facility.recent_trace(
             artifacts if isinstance(artifacts, dict) else {},
             trace_key="execution_trace",
@@ -1624,6 +1693,7 @@ class RuntimeEngine:
             "available_workflows": json.dumps(available_workflows, ensure_ascii=False),
             "agent_capabilities": json.dumps(agent_capabilities, ensure_ascii=False, default=str),
             "workflow_capabilities": json.dumps(workflow_capabilities, ensure_ascii=False, default=str),
+            "ltm_profile": ltm_profile,
             "recent_steps": json.dumps(recent_steps, ensure_ascii=False, default=str),
             "requested_workflow_id": requested_workflow_id or "",
             "step_count": state["runtime"].get("step_count", 0),
