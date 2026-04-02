@@ -23,16 +23,16 @@ system_prompt: |
   - When convenient, append a compact JSON object for downstream parsing.
 
   Optional JSON shape (preferred):
-  {
+  {{
     "final_text": "concise planning rationale",
-    "artifacts": {
-      "research_plan": {
+    "artifacts": {{
+      "research_plan": {{
         "has_enough_content": true,
         "step_type": "search|synthesize",
         "query": "string or null"
-      }
-    }
-  }
+      }}
+    }}
+  }}
 tools: []
 llm:
   name: openai_default

@@ -203,7 +203,7 @@ def stm_compression_node(
     stm_compressed = False
 
     with store.transaction() as conn:
-        store.upsert_session(session_id, user_id, state.get("initial_topic") or "", conn=conn)
+        store.upsert_session(session_id, user_id, state.get("topic") or "", conn=conn)
 
         backbone = _filter_backbone(messages)
         _persist_backbone(store, session_id, backbone, conn=conn)

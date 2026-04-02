@@ -9,26 +9,25 @@ system_prompt: |
   - user_text: {user_text}
   - messages: {messages}
   - artifacts: {artifacts}
-  - all_resources: {all_resources}
-  - research_gap: {research_gap}
-  - research_idea: {research_idea}
+  - Use `artifacts.retrieved_resources` for references/evidence.
+  - Use `artifacts.research_gap` and `artifacts.research_idea` for final writing focus.
 
   Output style:
   - Write a clear final response in the user's language.
   - Natural prose is the default; avoid unnecessary formatting constraints.
   - When convenient, append a compact JSON object for downstream parsing.
   - Optional JSON shape (preferred):
-  {
+  {{
     "final_text": "final response in user language",
-    "final_structured": {
+    "final_structured": {{
       "type": "proposal",
       "title": "string",
       "summary": "string",
       "research_gap": "string",
       "research_idea": "string",
-      "references": [{"title":"string","uri":"string"}]
-    }
-  }
+      "references": [{{"title":"string","uri":"string"}}]
+    }}
+  }}
 tools: []
 llm:
   name: openai_default

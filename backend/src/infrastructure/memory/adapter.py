@@ -69,7 +69,7 @@ class MemoryAdapter:
             stm_state = {
                 "session_id": session_id,
                 "user_id": user_id,
-                "initial_topic": topic,
+                "topic": topic,
                 "messages": messages,
             }
             if event_loop is None:

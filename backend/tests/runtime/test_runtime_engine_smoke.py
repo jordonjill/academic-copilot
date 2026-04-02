@@ -135,18 +135,29 @@ def test_runtime_engine_supervisor_runs_subagent_then_replies(monkeypatch, tmp_p
 
     decisions = iter(
         [
-            {"action": "run_subagent", "target": "researcher", "done": False},
+            {
+                "action": "run_subagent",
+                "target": "researcher",
+                "instruction": "collect three references",
+                "done": False,
+            },
             {"action": "direct_reply", "message": "done after subagent", "done": True},
         ]
     )
     researcher_calls = {"count": 0}
+    researcher_payloads: list[dict] = []
 
     def _fake_build(spec, llm, tool_resolver):
         del llm, tool_resolver
         if spec.id == "supervisor":
             return _FakeRunnable(lambda payload: json.dumps(next(decisions)))
         if spec.id == "researcher":
-            return _FakeRunnable(lambda payload: researcher_calls.__setitem__("count", researcher_calls["count"] + 1) or "research output")
+            def _invoke(payload):
+                researcher_payloads.append(payload)
+                researcher_calls["count"] += 1
+                return "research output"
+
+            return _FakeRunnable(_invoke)
         raise AssertionError(f"Unexpected agent execution: {spec.id}")
 
     monkeypatch.setattr("src.application.runtime.runtime_engine.build_agent_from_spec", _fake_build)
@@ -157,6 +168,18 @@ def test_runtime_engine_supervisor_runs_subagent_then_replies(monkeypatch, tmp_p
     assert result["message"] == "done after subagent"
     assert researcher_calls["count"] == 1
     assert state["runtime"]["step_count"] == 1
+    assert len(researcher_payloads) == 1
+    payload = researcher_payloads[0]
+    assert payload["user_text"] == "collect three references"
+    assert "collect three references" in payload["messages"]
+    assert "hello" not in payload["messages"]
+    artifacts = json.loads(payload["artifacts"])
+    assert artifacts["supervisor_instruction"] == "collect three references"
+    assert any(
+        isinstance(message, HumanMessage)
+        and "Supervisor task for researcher: collect three references" in message.content
+        for message in state["context"]["messages"]
+    )
 
 
 def test_runtime_engine_supervisor_starts_workflow(monkeypatch, tmp_path):
@@ -195,11 +218,13 @@ def test_runtime_engine_supervisor_starts_workflow(monkeypatch, tmp_path):
     assert result["success"] is True
     assert result["message"] == "workflow finished"
     assert reporter_calls["count"] == 1
-    assert state["runtime"]["mode"] == "workflow"
-    assert state["runtime"]["workflow_id"] == "wf1"
+    assert state["runtime"]["mode"] == "dynamic"
+    assert state["runtime"]["workflow_id"] is None
+    assert state["runtime"]["step_count"] >= 1
     assert len(supervisor_payloads) == 2
     finalize_payload = supervisor_payloads[-1]
     assert finalize_payload["workflow_completed"] is True
+    assert finalize_payload["requested_workflow_id"] == "wf1"
     assert "available_agents" in finalize_payload
     assert "available_workflows" in finalize_payload
     assert "step_count" in finalize_payload

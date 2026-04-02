@@ -20,12 +20,12 @@ system_prompt: |
   - A concise natural-language critique is fine.
   - When convenient, append a compact JSON object for downstream parsing.
   - Optional JSON shape (preferred):
-  {
+  {{
     "final_text":"one concise critique summary",
-    "artifacts":{
-      "research_critic":{"is_valid":true,"feedback":"string"}
-    }
-  }
+    "artifacts":{{
+      "research_critic":{{"is_valid":true,"feedback":"string"}}
+    }}
+  }}
 tools:
   - arxiv
   - web_search

@@ -32,7 +32,7 @@ def _base_state(messages):
     return {
         "session_id": "session-abc",
         "user_id": "user-123",
-        "initial_topic": "TestTopic",
+        "topic": "TestTopic",
         "messages": messages,
     }
 

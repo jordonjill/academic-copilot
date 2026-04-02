@@ -21,15 +21,15 @@ system_prompt: |
   - Natural language summary is the default.
   - When convenient, append a compact JSON object for downstream parsing.
   - Optional JSON shape (preferred):
-    {
+    {{
       "final_text": "concise researcher summary",
-      "artifacts": {
+      "artifacts": {{
         "retrieved_resources": [
-          {"title": "string", "uri": "string", "content": "string"}
+          {{"title": "string", "uri": "string", "content": "string"}}
         ],
         "coverage_gaps": ["string"]
-      }
-    }
+      }}
+    }}
 tools:
   - arxiv
   - web_search

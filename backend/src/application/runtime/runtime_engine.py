@@ -9,7 +9,7 @@ import re
 import threading
 from collections import OrderedDict
 from time import perf_counter
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Literal, Optional, TypedDict
 from urllib.parse import urlparse
 
 from langchain_core.language_models import BaseLanguageModel
@@ -36,6 +36,15 @@ _SUPERVISOR_MAX_SUBAGENT_CALLS_ENV = "SUPERVISOR_MAX_SUBAGENT_CALLS_PER_AGENT"
 _ENV_PLACEHOLDER_PATTERN = re.compile(r"\$\{\w+\}")
 logger = logging.getLogger(__name__)
 _SUPERVISOR_DECISION_PARSER = JsonOutputParser()
+
+
+class ExecutionResult(TypedDict):
+    source_kind: Literal["subagent", "workflow"]
+    source_id: str
+    output_text: str
+    parsed: Optional[Dict[str, Any]]
+    tool_outputs: list[Any]
+    artifacts_patch: Dict[str, Any]
 
 
 class RuntimeEngine:
@@ -169,7 +178,7 @@ class RuntimeEngine:
             if action == "start_workflow":
                 workflow_id = self._resolve_workflow_target(decision, state)
                 if workflow_id and workflow_id in self.registry.workflows:
-                    self._run_workflow(state, workflow_id, step_callback)
+                    self._execute_workflow_isolated(state, workflow_id, step_callback)
                     self._finalize_with_supervisor(state, requested_workflow_id=workflow_id)
                     return
                 # Invalid target: degrade gracefully.
@@ -210,7 +219,7 @@ class RuntimeEngine:
                         state["context"]["messages"].append(
                             HumanMessage(content=f"Supervisor task for {agent_id}: {instruction}")
                         )
-                    self._execute_agent(state, agent_id, agent_id)
+                    self._execute_subagent_isolated(state, agent_id, instruction)
                     subagent_call_counts[agent_id] = calls_used + 1
                     state["runtime"]["step_count"] += 1
                     if step_callback is not None:
@@ -297,7 +306,7 @@ class RuntimeEngine:
             if action == "start_workflow":
                 workflow_id = self._resolve_workflow_target(decision, state)
                 if workflow_id and workflow_id in self.registry.workflows:
-                    await self._run_workflow_async(state, workflow_id, step_callback)
+                    await self._execute_workflow_isolated_async(state, workflow_id, step_callback)
                     await self._finalize_with_supervisor_async(state, requested_workflow_id=workflow_id)
                     return
                 action = "direct_reply"
@@ -337,7 +346,7 @@ class RuntimeEngine:
                         state["context"]["messages"].append(
                             HumanMessage(content=f"Supervisor task for {agent_id}: {instruction}")
                         )
-                    await self._execute_agent_async(state, agent_id, agent_id)
+                    await self._execute_subagent_isolated_async(state, agent_id, instruction)
                     subagent_call_counts[agent_id] = calls_used + 1
                     state["runtime"]["step_count"] += 1
                     await self._emit_step_callback_async(
@@ -809,6 +818,298 @@ class RuntimeEngine:
 
         self._apply_agent_output(state, node_name, agent_id, ai_text, parsed)
 
+    def _execute_subagent_isolated(
+        self,
+        state: RuntimeState,
+        agent_id: str,
+        instruction: Any,
+    ) -> None:
+        isolated_state = self._build_isolated_subagent_state(state, agent_id, instruction)
+        self._execute_agent(isolated_state, agent_id, agent_id)
+        result = self._collect_subagent_execution_result(isolated_state, agent_id)
+        self._deliver_execution_result_to_supervisor(state, result)
+
+    async def _execute_subagent_isolated_async(
+        self,
+        state: RuntimeState,
+        agent_id: str,
+        instruction: Any,
+    ) -> None:
+        isolated_state = self._build_isolated_subagent_state(state, agent_id, instruction)
+        await self._execute_agent_async(isolated_state, agent_id, agent_id)
+        result = self._collect_subagent_execution_result(isolated_state, agent_id)
+        self._deliver_execution_result_to_supervisor(state, result)
+
+    def _execute_workflow_isolated(
+        self,
+        state: RuntimeState,
+        workflow_id: str,
+        step_callback: Optional[StepCallback],
+    ) -> None:
+        isolated_state = self._build_isolated_workflow_state(state, workflow_id)
+        self._run_workflow(isolated_state, workflow_id, step_callback)
+        state["runtime"]["step_count"] += int(isolated_state.get("runtime", {}).get("step_count", 0))
+        state["runtime"]["loop_count"] += int(isolated_state.get("runtime", {}).get("loop_count", 0))
+        result = self._collect_workflow_execution_result(isolated_state, workflow_id)
+        self._deliver_execution_result_to_supervisor(state, result)
+
+    async def _execute_workflow_isolated_async(
+        self,
+        state: RuntimeState,
+        workflow_id: str,
+        step_callback: Optional[StepCallback],
+    ) -> None:
+        isolated_state = self._build_isolated_workflow_state(state, workflow_id)
+        await self._run_workflow_async(isolated_state, workflow_id, step_callback)
+        state["runtime"]["step_count"] += int(isolated_state.get("runtime", {}).get("step_count", 0))
+        state["runtime"]["loop_count"] += int(isolated_state.get("runtime", {}).get("loop_count", 0))
+        result = self._collect_workflow_execution_result(isolated_state, workflow_id)
+        self._deliver_execution_result_to_supervisor(state, result)
+
+    def _build_isolated_subagent_state(
+        self,
+        parent_state: RuntimeState,
+        agent_id: str,
+        instruction: Any,
+    ) -> RuntimeState:
+        task_text = ""
+        if isinstance(instruction, str) and instruction.strip():
+            task_text = instruction.strip()
+        if not task_text:
+            task_text = parent_state["input"].get("user_text", "")
+        artifacts_topic = None
+        parent_artifacts = parent_state.get("artifacts")
+        if isinstance(parent_artifacts, dict):
+            artifacts_topic = parent_artifacts.get("topic")
+        return {
+            "input": {
+                "user_text": task_text,
+                "user_id": parent_state["input"].get("user_id", ""),
+                "session_id": parent_state["input"].get("session_id", ""),
+            },
+            "context": {
+                "messages": [HumanMessage(content=task_text)],
+                "memory_summary": "",
+            },
+            "runtime": {
+                "mode": "subagent",
+                "workflow_id": parent_state.get("runtime", {}).get("workflow_id"),
+                "current_node": agent_id,
+                "step_count": 0,
+                "loop_count": 0,
+                "status": "running",
+            },
+            "io": {
+                "last_model_output": None,
+                "last_tool_outputs": [],
+            },
+            "artifacts": {
+                "topic": artifacts_topic,
+                "shared": {},
+                "supervisor_instruction": task_text,
+            },
+            "output": {
+                "final_text": None,
+                "final_structured": None,
+            },
+            "errors": {
+                "last_error": None,
+            },
+        }
+
+    def _build_isolated_workflow_state(
+        self,
+        parent_state: RuntimeState,
+        workflow_id: str,
+    ) -> RuntimeState:
+        user_text = parent_state["input"].get("user_text", "")
+        artifacts_topic = None
+        parent_artifacts = parent_state.get("artifacts")
+        if isinstance(parent_artifacts, dict):
+            artifacts_topic = parent_artifacts.get("topic")
+        return {
+            "input": {
+                "user_text": user_text,
+                "user_id": parent_state["input"].get("user_id", ""),
+                "session_id": parent_state["input"].get("session_id", ""),
+            },
+            "context": {
+                "messages": [HumanMessage(content=user_text)],
+                "memory_summary": "",
+            },
+            "runtime": {
+                "mode": "workflow",
+                "workflow_id": workflow_id,
+                "current_node": None,
+                "step_count": 0,
+                "loop_count": 0,
+                "status": "running",
+            },
+            "io": {
+                "last_model_output": None,
+                "last_tool_outputs": [],
+            },
+            "artifacts": {
+                "topic": artifacts_topic,
+                "shared": {},
+            },
+            "output": {
+                "final_text": None,
+                "final_structured": None,
+            },
+            "errors": {
+                "last_error": None,
+            },
+        }
+
+    def _collect_subagent_execution_result(
+        self,
+        isolated_state: RuntimeState,
+        agent_id: str,
+    ) -> ExecutionResult:
+        isolated_io = isolated_state.get("io", {})
+        isolated_artifacts = isolated_state.get("artifacts", {})
+        isolated_shared = (
+            isolated_artifacts.get("shared", {})
+            if isinstance(isolated_artifacts, dict)
+            else {}
+        )
+        shared_entry = (
+            isolated_shared.get(agent_id)
+            if isinstance(isolated_shared, dict)
+            else None
+        )
+        text = isolated_io.get("last_model_output") if isinstance(isolated_io, dict) else None
+        if not isinstance(text, str) or not text.strip():
+            output_state = isolated_state.get("output", {})
+            candidate = output_state.get("final_text") if isinstance(output_state, dict) else None
+            text = candidate if isinstance(candidate, str) else ""
+        parsed: Optional[Dict[str, Any]] = None
+        if isinstance(shared_entry, dict):
+            entry_text = shared_entry.get("output_text")
+            if isinstance(entry_text, str) and entry_text.strip():
+                text = entry_text
+            entry_parsed = shared_entry.get("parsed")
+            if isinstance(entry_parsed, dict):
+                parsed = entry_parsed
+        tool_outputs: list[Any] = []
+        if isinstance(isolated_io, dict):
+            raw_tool_outputs = isolated_io.get("last_tool_outputs", [])
+            if isinstance(raw_tool_outputs, list):
+                tool_outputs = list(raw_tool_outputs)
+        artifacts_patch: Dict[str, Any] = {}
+        if isinstance(parsed, dict):
+            patch = parsed.get("artifacts")
+            if isinstance(patch, dict):
+                artifacts_patch = dict(patch)
+        return {
+            "source_kind": "subagent",
+            "source_id": agent_id,
+            "output_text": text or "",
+            "parsed": parsed,
+            "tool_outputs": tool_outputs,
+            "artifacts_patch": artifacts_patch,
+        }
+
+    def _collect_workflow_execution_result(
+        self,
+        isolated_state: RuntimeState,
+        workflow_id: str,
+    ) -> ExecutionResult:
+        isolated_io = isolated_state.get("io", {})
+        isolated_artifacts = isolated_state.get("artifacts", {})
+        isolated_shared = (
+            isolated_artifacts.get("shared", {})
+            if isinstance(isolated_artifacts, dict)
+            else {}
+        )
+        shared_entry: Any = None
+        if isinstance(isolated_shared, dict):
+            shared_entry = isolated_shared.get("reporter")
+            if not isinstance(shared_entry, dict):
+                for item in reversed(list(isolated_shared.values())):
+                    if isinstance(item, dict):
+                        shared_entry = item
+                        break
+        text = ""
+        parsed: Optional[Dict[str, Any]] = None
+        tool_outputs: list[Any] = []
+        if isinstance(shared_entry, dict):
+            maybe_text = shared_entry.get("output_text")
+            if isinstance(maybe_text, str):
+                text = maybe_text
+            maybe_parsed = shared_entry.get("parsed")
+            if isinstance(maybe_parsed, dict):
+                parsed = maybe_parsed
+            maybe_tools = shared_entry.get("tool_outputs")
+            if isinstance(maybe_tools, list):
+                tool_outputs = list(maybe_tools)
+        if not text:
+            text = (
+                isolated_state.get("output", {}).get("final_text")
+                or isolated_io.get("last_model_output")
+                or ""
+            )
+        if not tool_outputs and isinstance(isolated_io, dict):
+            maybe_tools = isolated_io.get("last_tool_outputs", [])
+            if isinstance(maybe_tools, list):
+                tool_outputs = list(maybe_tools)
+
+        artifacts_patch: Dict[str, Any] = {}
+        if isinstance(parsed, dict):
+            patch = parsed.get("artifacts")
+            if isinstance(patch, dict):
+                artifacts_patch = dict(patch)
+        if not artifacts_patch and isinstance(isolated_artifacts, dict):
+            artifacts_patch = {
+                key: value
+                for key, value in isolated_artifacts.items()
+                if key not in {"topic", "shared", "supervisor_instruction"}
+            }
+        return {
+            "source_kind": "workflow",
+            "source_id": workflow_id,
+            "output_text": text or "",
+            "parsed": parsed,
+            "tool_outputs": tool_outputs,
+            "artifacts_patch": artifacts_patch,
+        }
+
+    def _deliver_execution_result_to_supervisor(
+        self,
+        supervisor_state: RuntimeState,
+        result: ExecutionResult,
+    ) -> None:
+        text = result.get("output_text", "")
+        supervisor_state["io"]["last_model_output"] = text
+        supervisor_state["io"]["last_tool_outputs"] = list(result.get("tool_outputs", []))
+        if isinstance(text, str) and text.strip():
+            supervisor_state["context"]["messages"].append(AIMessage(content=text))
+
+        parsed_payload: Optional[Dict[str, Any]] = None
+        base_parsed = result.get("parsed")
+        if isinstance(base_parsed, dict):
+            parsed_payload = dict(base_parsed)
+        patch = result.get("artifacts_patch", {})
+        if isinstance(patch, dict) and patch:
+            if parsed_payload is None:
+                parsed_payload = {}
+            existing_patch = parsed_payload.get("artifacts")
+            if isinstance(existing_patch, dict):
+                merged_patch = dict(existing_patch)
+                merged_patch.update(patch)
+                parsed_payload["artifacts"] = merged_patch
+            else:
+                parsed_payload["artifacts"] = dict(patch)
+
+        self._apply_agent_output(
+            supervisor_state,
+            result.get("source_id", ""),
+            result.get("source_id", ""),
+            text if isinstance(text, str) else "",
+            parsed_payload,
+        )
+
     def _apply_agent_output(
         self,
         state: RuntimeState,
@@ -874,7 +1175,7 @@ class RuntimeEngine:
 
     def _build_chain_payload(self, state: RuntimeState, node_name: str, agent_id: str) -> Dict[str, Any]:
         artifacts = state.get("artifacts", {})
-        payload = {
+        return {
             "user_text": state["input"].get("user_text", ""),
             "messages": self._messages_to_text(state["context"].get("messages", [])),
             "memory_summary": state["context"].get("memory_summary", ""),
@@ -883,16 +1184,8 @@ class RuntimeEngine:
             "artifacts": json.dumps(artifacts, ensure_ascii=False, default=str),
             "agent_id": agent_id,
             "node_name": node_name,
-            # common shortcuts for current workflow prompts
-            "initial_topic": artifacts.get("topic") or state["input"].get("user_text", ""),
-            "retrieved_resources": json.dumps(artifacts.get("retrieved_resources", []), ensure_ascii=False, default=str),
-            "feedback_section": artifacts.get("feedback_section", ""),
-            "all_resources": json.dumps(artifacts.get("retrieved_resources", []), ensure_ascii=False, default=str),
-            "research_gap": artifacts.get("research_gap", ""),
-            "research_idea": artifacts.get("research_idea", ""),
             "supervisor_instruction": artifacts.get("supervisor_instruction", ""),
         }
-        return payload
 
     def _resolve_llm(self, spec: AgentSpec) -> BaseLanguageModel:
         llm_ref = spec.llm
