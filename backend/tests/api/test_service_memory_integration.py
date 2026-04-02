@@ -1,5 +1,6 @@
 import asyncio
 
+import pytest
 from langchain_core.messages import AIMessage, SystemMessage
 
 from src.interfaces.api.service import AcademicCopilotApp
@@ -89,3 +90,32 @@ def test_chat_async_keeps_last_states_per_session(monkeypatch):
     assert state_2 is not None
     assert state_1["input"]["user_text"] == "first"
     assert state_2["input"]["user_text"] == "second"
+
+
+def test_chat_async_persists_memory_on_runtime_failure(monkeypatch):
+    calls: dict = {"persist_called": False}
+
+    class _FakeMemory:
+        def load_context(self, session_id: str):
+            del session_id
+            return ([], "")
+
+        def persist_turn(self, state, llm):
+            del state, llm
+            calls["persist_called"] = True
+            return {"stm_compressed": False}
+
+    monkeypatch.setattr("src.interfaces.api.service.MemoryAdapter", lambda: _FakeMemory())
+    app = AcademicCopilotApp()
+
+    async def _failing_run_turn_async(state, requested_workflow_id=None, step_callback=None):
+        del state, requested_workflow_id, step_callback
+        raise RuntimeError("runtime failed")
+
+    monkeypatch.setattr(app.runtime, "run_turn_async", _failing_run_turn_async)
+    monkeypatch.setattr(app.runtime, "resolve_default_llm", lambda: object())
+
+    with pytest.raises(RuntimeError, match="runtime failed"):
+        asyncio.run(app.chat_async(user_message="failing turn", session_id="s-fail"))
+
+    assert calls["persist_called"] is True

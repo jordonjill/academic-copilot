@@ -15,26 +15,25 @@ def test_tool_manager_loads_internal_tools(tmp_path):
         "version": "1.0",
         "servers": {},
         "tools": {
-            "arxiv": {
+            "scholar_search": {
                 "transport": "internal",
-                "module": "src.infrastructure.tools.arxiv_search",
-                "attribute": "search_arxiv",
+                "module": "src.infrastructure.tools.academic_tools",
+                "attribute": "scholar_search",
                 "enabled": True,
             },
-            "web_search": {
+            "paper_fetch": {
                 "transport": "internal",
-                "module": "src.infrastructure.tools.crawl_search",
-                "attribute": "crawl_search",
+                "module": "src.infrastructure.tools.academic_tools",
+                "attribute": "paper_fetch",
                 "settings": {
-                    "max_results": 7,
-                    "include_domains": ["https://example.org"],
+                    "timeout_seconds": 10,
                 },
                 "enabled": True,
             },
             "disabled_tool": {
                 "transport": "internal",
-                "module": "src.infrastructure.tools.arxiv_search",
-                "attribute": "search_arxiv",
+                "module": "src.infrastructure.tools.academic_tools",
+                "attribute": "citation_graph",
                 "enabled": False,
             },
         },
@@ -44,18 +43,17 @@ def test_tool_manager_loads_internal_tools(tmp_path):
     manager = ToolManager(catalog_path=catalog_path)
     report = manager.load_internal_only()
 
-    assert "arxiv" in report["loaded_tools"]
-    assert "web_search" in report["loaded_tools"]
+    assert "scholar_search" in report["loaded_tools"]
+    assert "paper_fetch" in report["loaded_tools"]
     assert "disabled_tool" not in report["loaded_tools"]
-    assert manager.get_tool("arxiv") is not None
+    assert manager.get_tool("scholar_search") is not None
     assert manager.get_tool("disabled_tool") is None
-    assert manager.get_tool_settings("web_search") == {
-        "max_results": 7,
-        "include_domains": ["https://example.org"],
+    assert manager.get_tool_settings("paper_fetch") == {
+        "timeout_seconds": 10,
     }
     assert manager.get_tool_settings("unknown_tool") == {}
-    assert manager.get_catalog_tool_ids(enabled_only=True) == {"arxiv", "web_search"}
-    assert manager.get_catalog_tool_ids(enabled_only=False) == {"arxiv", "web_search", "disabled_tool"}
+    assert manager.get_catalog_tool_ids(enabled_only=True) == {"scholar_search", "paper_fetch"}
+    assert manager.get_catalog_tool_ids(enabled_only=False) == {"scholar_search", "paper_fetch", "disabled_tool"}
 
 
 def test_tool_manager_handles_missing_catalog_gracefully(tmp_path):
@@ -64,7 +62,7 @@ def test_tool_manager_handles_missing_catalog_gracefully(tmp_path):
     report = manager.load_internal_only()
 
     assert report["loaded_tools"] == []
-    assert manager.get_tool("web_search") is None
+    assert manager.get_tool("scholar_search") is None
 
 
 def test_tool_manager_loads_mcp_tools_with_async_client(monkeypatch, tmp_path):

@@ -10,35 +10,50 @@ servers:
     enabled: false
 
 tools:
-  web_search:
+  academic_read:
     transport: internal
-    module: "src.infrastructure.tools.crawl_search"
-    attribute: "crawl_search"
-    settings:
-      max_results: 10
-      include_domains: []
+    module: "src.infrastructure.tools.academic_io"
+    attribute: "academic_read"
     enabled: true
 
-  arxiv:
+  academic_export:
     transport: internal
-    module: "src.infrastructure.tools.arxiv_search"
-    attribute: "search_arxiv"
+    module: "src.infrastructure.tools.academic_io"
+    attribute: "academic_export"
     enabled: true
 
-  docx_export:
+  scholar_search:
     transport: internal
-    module: "src.infrastructure.tools.docx_export"
-    attribute: "export_docx"
+    module: "src.infrastructure.tools.academic_tools"
+    attribute: "scholar_search"
     enabled: true
 
-  pdf_export:
+  paper_fetch:
     transport: internal
-    module: "src.infrastructure.tools.pdf_export"
-    attribute: "export_pdf"
+    module: "src.infrastructure.tools.academic_tools"
+    attribute: "paper_fetch"
     enabled: true
 
-  filesystem:
+  pdf_structured_extract:
     transport: internal
-    module: "src.infrastructure.tools.local_filesystem"
-    attribute: "filesystem"
+    module: "src.infrastructure.tools.academic_tools"
+    attribute: "pdf_structured_extract"
+    enabled: true
+
+  citation_graph:
+    transport: internal
+    module: "src.infrastructure.tools.academic_tools"
+    attribute: "citation_graph"
+    enabled: true
+
+  claim_grounding_check:
+    transport: internal
+    module: "src.infrastructure.tools.academic_tools"
+    attribute: "claim_grounding_check"
+    enabled: true
+
+  bib_manager:
+    transport: internal
+    module: "src.infrastructure.tools.academic_tools"
+    attribute: "bib_manager"
     enabled: true

@@ -22,6 +22,7 @@ class ChatRequest(BaseModel):
 class ChatResponseData(BaseModel):
     runtime: Dict[str, Any] = Field(default_factory=dict)
     artifacts: Dict[str, Any] = Field(default_factory=dict)
+    model_config = ConfigDict(extra="forbid")
 
 
 class ChatResponse(BaseModel):

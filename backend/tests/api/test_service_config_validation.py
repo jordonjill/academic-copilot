@@ -52,7 +52,7 @@ def test_validate_runtime_bindings_detects_unknown_tool(monkeypatch):
     )
 
     monkeypatch.setattr(service, "_CONFIG_REGISTRY", fake_registry)
-    monkeypatch.setattr(service, "get_tool_manager", lambda: _FakeToolManager({"web_search"}))
+    monkeypatch.setattr(service, "get_tool_manager", lambda: _FakeToolManager({"scholar_search"}))
 
     errors = service.validate_runtime_bindings()
     assert errors
@@ -98,7 +98,7 @@ def test_reload_runtime_config_includes_binding_errors(monkeypatch):
     fake_registry = _FakeRegistry(agents={"writer": agent}, workflows={})
 
     monkeypatch.setattr(service, "_CONFIG_REGISTRY", fake_registry)
-    monkeypatch.setattr(service, "get_tool_manager", lambda: _FakeToolManager({"web_search"}))
+    monkeypatch.setattr(service, "get_tool_manager", lambda: _FakeToolManager({"scholar_search"}))
 
     report = service.reload_runtime_config()
     assert report["config_version"] == 1

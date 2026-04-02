@@ -101,7 +101,7 @@ def test_agent_spec_rejects_chain_mode_with_tools():
                 "name": "Planner",
                 "mode": "chain",
                 "system_prompt": "plan",
-                "tools": ["web_search"],
+                "tools": ["scholar_search"],
                 "llm": {"name": "openai_default"},
             }
         )

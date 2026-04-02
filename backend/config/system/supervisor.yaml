@@ -32,6 +32,7 @@ system_prompt: |
 
   Decision rules:
   - Prefer direct_reply for simple questions.
+  - For complex academic tasks (proposal drafting, literature review), prefer run_workflow.
   - Use run_agent when a specific specialist is needed.
   - Use run_workflow for larger structured tasks.
   - target must be a valid id from available_agents or available_workflows.

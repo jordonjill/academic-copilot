@@ -253,6 +253,28 @@ class AcademicCopilotApp:
 
         timeout_seconds = _chat_turn_timeout_seconds()
         _warn_timeout_misconfiguration(timeout_seconds)
+
+        async def _persist_memory_best_effort() -> None:
+            try:
+                loop = asyncio.get_running_loop()
+                llm = self.runtime.resolve_default_llm()
+
+                supports_event_loop = False
+                try:
+                    params = inspect.signature(self.memory.persist_turn).parameters
+                    supports_event_loop = "event_loop" in params
+                except (TypeError, ValueError):
+                    supports_event_loop = False
+
+                def _persist_turn() -> dict[str, Any]:
+                    if supports_event_loop:
+                        return self.memory.persist_turn(state, llm, event_loop=loop)
+                    return self.memory.persist_turn(state, llm)
+
+                await asyncio.to_thread(_persist_turn)
+            except Exception as exc:
+                logger.exception("Memory pipeline failed (non-fatal): %s", exc)
+
         try:
             result = await asyncio.wait_for(
                 self.runtime.run_turn_async(
@@ -269,29 +291,13 @@ class AcademicCopilotApp:
                 user_id=user_id,
                 timeout_seconds=timeout_seconds,
             )
-            raise asyncio.TimeoutError(
-                f"Chat turn timed out after {int(timeout_seconds)} seconds"
-            )
+            await _persist_memory_best_effort()
+            raise asyncio.TimeoutError(f"Chat turn timed out after {int(timeout_seconds)} seconds")
+        except Exception:
+            await _persist_memory_best_effort()
+            raise
 
-        try:
-            loop = asyncio.get_running_loop()
-            llm = self.runtime.resolve_default_llm()
-
-            supports_event_loop = False
-            try:
-                params = inspect.signature(self.memory.persist_turn).parameters
-                supports_event_loop = "event_loop" in params
-            except (TypeError, ValueError):
-                supports_event_loop = False
-
-            def _persist_turn() -> dict[str, Any]:
-                if supports_event_loop:
-                    return self.memory.persist_turn(state, llm, event_loop=loop)
-                return self.memory.persist_turn(state, llm)
-
-            await asyncio.to_thread(_persist_turn)
-        except Exception as exc:
-            logger.exception("Memory pipeline failed (non-fatal): %s", exc)
+        await _persist_memory_best_effort()
 
         self._remember_state(sid, state)
         _log_event(

@@ -62,7 +62,7 @@ def test_build_react_agent_from_spec_wires_mode(monkeypatch):
         name="Researcher Agent",
         mode="react",
         system_prompt="You research",
-        tools=["web_search"],
+        tools=["scholar_search"],
         llm={"name": "openai_default"},
     )
 
@@ -89,7 +89,7 @@ def test_build_react_agent_from_spec_wires_mode(monkeypatch):
     assert captured["mode"] == AgentMode.REACT
     assert captured["llm"] is llm
     assert captured["prompt"] == "You research"
-    assert [tool.name for tool in captured["tools"]] == ["tool:web_search"]
+    assert [tool.name for tool in captured["tools"]] == ["tool:scholar_search"]
     assert captured["name"] == "researcher"
     assert captured["output_schema"] is None
 
@@ -100,7 +100,7 @@ def test_build_agent_from_spec_raises_on_resolver_error():
         name="Planner Agent",
         mode="react",
         system_prompt="You plan",
-        tools=["web_search"],
+        tools=["scholar_search"],
         llm={"name": "openai_default"},
     )
 
@@ -109,7 +109,7 @@ def test_build_agent_from_spec_raises_on_resolver_error():
 
     with pytest.raises(ValueError) as exc:
         agent_runtime.build_agent_from_spec(spec, object(), tool_resolver)
-    assert "web_search" in str(exc.value)
+    assert "scholar_search" in str(exc.value)
 
 
 def test_build_agent_from_spec_raises_on_missing_tool():
@@ -118,7 +118,7 @@ def test_build_agent_from_spec_raises_on_missing_tool():
         name="Planner Agent",
         mode="react",
         system_prompt="You plan",
-        tools=["arxiv"],
+        tools=["paper_fetch"],
         llm={"name": "openai_default"},
     )
 
@@ -127,7 +127,7 @@ def test_build_agent_from_spec_raises_on_missing_tool():
 
     with pytest.raises(ValueError) as exc:
         agent_runtime.build_agent_from_spec(spec, object(), tool_resolver)
-    assert "arxiv" in str(exc.value)
+    assert "paper_fetch" in str(exc.value)
 
 
 @pytest.fixture
@@ -219,10 +219,9 @@ def test_enforce_limits_raises_on_step_limit(workflow_runtime, proposal_state):
         workflow_runtime.enforce_limits(proposal_state)
 
 
-def test_enforce_limits_raises_on_loop_limit(workflow_runtime, proposal_state):
+def test_enforce_limits_does_not_raise_on_loop_limit(workflow_runtime, proposal_state):
     proposal_state["_loop_count"] = workflow_runtime.spec.limits.get("max_loops", 6)
-    with pytest.raises(RuntimeError, match="max_loops"):
-        workflow_runtime.enforce_limits(proposal_state)
+    workflow_runtime.enforce_limits(proposal_state)
 
 
 def test_next_node_supports_expression_condition():

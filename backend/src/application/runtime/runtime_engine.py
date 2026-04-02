@@ -1692,9 +1692,9 @@ class RuntimeEngine:
         except Exception as exc:
             errors.append(f"default_llm_error: {exc}")
 
-        tool = get_tool("web_search")
+        tool = get_tool("scholar_search")
         if tool is None:
-            errors.append("tool_error: web_search unavailable")
+            errors.append("tool_error: scholar_search unavailable")
 
         return {
             "ok": len(errors) == 0,

@@ -52,7 +52,12 @@ class WorkflowRuntime:
         if state.get("_step_count", 0) >= max_steps:
             raise RuntimeError("max_steps exceeded")
         if state.get("_loop_count", 0) >= max_loops:
-            raise RuntimeError("max_loops exceeded")
+            logger.warning(
+                "workflow.max_loops_reached workflow_id=%s loop_count=%s max_loops=%s continue=true",
+                self.spec.id,
+                state.get("_loop_count", 0),
+                max_loops,
+            )
 
     def _condition_matches(self, condition: Any, state: dict[str, Any]) -> bool:
         if condition is None:

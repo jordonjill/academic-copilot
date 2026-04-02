@@ -1,5 +1,5 @@
-id: proposal_v2
-name: Proposal Workflow v3 (Evidence-Driven)
+id: lit_review_v1
+name: Literature Review Workflow
 entry_node: planner
 nodes:
   planner:
@@ -11,15 +11,6 @@ nodes:
   read:
     type: agent
     agent_id: reader_extractor
-  gap:
-    type: agent
-    agent_id: gap_hypothesis
-  method:
-    type: agent
-    agent_id: method_designer
-  experiment:
-    type: agent
-    agent_id: experiment_designer
   write:
     type: agent
     agent_id: writer_academic
@@ -37,12 +28,6 @@ edges:
   - from: search
     to: read
   - from: read
-    to: gap
-  - from: gap
-    to: method
-  - from: method
-    to: experiment
-  - from: experiment
     to: write
   - from: write
     to: critic
@@ -59,16 +44,11 @@ edges:
       field: artifacts.quality_report.decision
       equals: revise_evidence
   - from: critic
-    to: method
-    condition:
-      field: artifacts.quality_report.decision
-      equals: revise_method
-  - from: critic
     to: write
     condition:
       field: artifacts.quality_report.decision
       equals: revise_writing
 limits:
-  max_steps: 30
-  max_loops: 8
-  timeout_ms: 900000
+  max_steps: 20
+  max_loops: 6
+  timeout_ms: 600000

@@ -58,7 +58,23 @@ async def chat(
 
     rtype = result.get("type", "chat")
     message = result.get("message") or (result.get("proposal") or {}).get("title", "")
-    data = {k: v for k, v in result.items() if k not in ("success", "type", "message")} or None
+
+    data = result.get("data")
+    if data is None:
+        extras = {k: v for k, v in result.items() if k not in ("success", "type", "message")}
+        if "data" in extras and len(extras) == 1:
+            data = extras["data"]
+        elif extras:
+            data = extras
+        else:
+            data = None
+
+    if (not message) and isinstance(data, dict):
+        for key in ("final_text", "summary", "title"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                message = value
+                break
 
     return ChatResponse(
         success=result.get("success", False),

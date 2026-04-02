@@ -21,6 +21,20 @@ class _DummyCopilot:
         return {"success": True, "type": "chat", "message": "ok"}
 
 
+class _StructuredCopilot:
+    async def chat_async(self, **kwargs):
+        del kwargs
+        return {
+            "success": True,
+            "type": "structured",
+            "data": {
+                "title": "Structured Title",
+                "summary": "Structured Summary",
+                "custom_field": "preserved",
+            },
+        }
+
+
 def _build_client() -> TestClient:
     app = FastAPI()
     app.include_router(chat.router)
@@ -38,7 +52,7 @@ def test_admin_reload_returns_200_with_runtime_and_tools(monkeypatch):
         },
         "tools": {
             "version": 2,
-            "loaded_tools": ["arxiv", "web_search"],
+            "loaded_tools": ["scholar_search", "paper_fetch"],
             "loaded_servers": [],
             "tool_catalog_path": "/tmp/tools.yaml",
             "failed": [],
@@ -64,7 +78,7 @@ def test_admin_reload_tools_returns_200(monkeypatch):
     monkeypatch.setenv("ADMIN_ACCESS_KEY", "admin-123")
     report = {
         "version": 7,
-        "loaded_tools": ["arxiv", "web_search", "filesystem"],
+        "loaded_tools": ["scholar_search", "paper_fetch", "filesystem"],
         "loaded_servers": ["filesystem"],
         "tool_catalog_path": "/tmp/tools.yaml",
         "failed": [],
@@ -135,6 +149,21 @@ def test_chat_rejects_unknown_workflow(monkeypatch):
         json={"message": "Hello", "workflow_id": "unknown_workflow"},
     )
     assert response.status_code == 400
+
+
+def test_chat_preserves_structured_payload_and_fallback_message(monkeypatch):
+    monkeypatch.setattr(
+        "src.interfaces.api.routes.chat.create_copilot",
+        lambda: _StructuredCopilot(),
+    )
+    client = _build_client()
+    response = client.post("/chat", headers=AUTH_HEADERS, json={"message": "Hello"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["type"] == "structured"
+    assert payload["message"] == "Structured Summary"
+    assert payload["data"]["title"] == "Structured Title"
+    assert payload["data"]["custom_field"] == "preserved"
 
 
 def test_chat_rate_limit_returns_429(monkeypatch):
