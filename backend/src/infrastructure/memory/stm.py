@@ -2,11 +2,11 @@
 STM（短期记忆）压缩管道。
 
 算法：
-  1. tiktoken 估算当前 messages token 数
+  1. 优先使用 tiktoken 估算当前 messages token 数（不可用时回退）
   2. 若 > STM_TOKEN_THRESHOLD：
        a. filter_backbone() — 保留 Human/AI text，丢弃 ToolMessage
-       b. LLM 摘要旧消息
-       c. 保留最近 STM_KEEP_RECENT 条原文
+       b. LLM 摘要旧消息（目标 STM_SUMMARY_TARGET_TOKENS）
+       c. 保留最近上下文（优先按 STM_RECENT_TARGET_TOKENS，失败回退 STM_KEEP_RECENT）
        d. 构造 [SystemMessage(compressed_summary), ...recent_n]
   3. 将主干消息持久化到 SQLite
   4. 返回更新后的 state 字段
@@ -34,6 +34,8 @@ from langchain_core.messages import (
 from src.infrastructure.config.config import (
     MEMORY_PIPELINE_ENABLED,
     STM_KEEP_RECENT,
+    STM_RECENT_TARGET_TOKENS,
+    STM_SUMMARY_TARGET_TOKENS,
     STM_TOKEN_THRESHOLD,
 )
 from src.infrastructure.config.prompt import STM_COMPRESSION_PROMPT
@@ -109,19 +111,68 @@ async def drain_ltm_tasks(timeout_seconds: float = 5.0) -> dict[str, Any]:
     return report
 
 
-def _estimate_tokens(messages: List[BaseMessage]) -> int:
-    """用 tiktoken 估算 token 数（cl100k_base），回退到字符 / 4。"""
+def _try_get_token_encoder() -> Any | None:
     try:
         import tiktoken
 
-        enc = tiktoken.get_encoding("cl100k_base")
-        total = 0
-        for m in messages:
-            content = m.content if isinstance(m.content, str) else str(m.content)
-            total += len(enc.encode(content))
-        return total
+        return tiktoken.get_encoding("cl100k_base")
     except Exception:
-        return sum(len(str(m.content)) // 4 for m in messages)
+        return None
+
+
+def _estimate_text_tokens(text: str, encoder: Any | None) -> int:
+    if encoder is not None:
+        try:
+            return max(1, len(encoder.encode(text)))
+        except Exception:
+            pass
+    return max(1, len(text) // 4)
+
+
+def _estimate_tokens(messages: List[BaseMessage], *, encoder: Any | None) -> int:
+    total = 0
+    for message in messages:
+        content = message.content if isinstance(message.content, str) else str(message.content)
+        total += _estimate_text_tokens(content, encoder) + 4
+    return max(1, total)
+
+
+def _select_recent_messages_by_token_budget(
+    messages: List[BaseMessage],
+    token_budget: int,
+    *,
+    encoder: Any,
+) -> List[BaseMessage]:
+    if token_budget <= 0:
+        return []
+    selected_reversed: List[BaseMessage] = []
+    used = 0
+    for message in reversed(messages):
+        content = message.content if isinstance(message.content, str) else str(message.content)
+        message_tokens = _estimate_text_tokens(content, encoder) + 4
+        if selected_reversed and (used + message_tokens) > token_budget:
+            break
+        selected_reversed.append(message)
+        used += message_tokens
+    selected_reversed.reverse()
+    return selected_reversed
+
+
+def _trim_text_to_token_budget(text: str, token_budget: int, *, encoder: Any | None) -> str:
+    cleaned = text.strip()
+    if token_budget <= 0 or not cleaned:
+        return cleaned
+    if encoder is None:
+        approx_chars = max(32, token_budget * 4)
+        return cleaned[:approx_chars]
+    try:
+        tokens = encoder.encode(cleaned)
+        if len(tokens) <= token_budget:
+            return cleaned
+        return encoder.decode(tokens[:token_budget]).strip()
+    except Exception:
+        approx_chars = max(32, token_budget * 4)
+        return cleaned[:approx_chars]
 
 
 def _filter_backbone(messages: List[BaseMessage]) -> List[BaseMessage]:
@@ -194,8 +245,9 @@ def stm_compression_node(
     messages: List[BaseMessage] = list(state.get("messages", []))
     session_id = state.get("session_id", "unknown")
     user_id = state.get("user_id", "default")
+    token_encoder = _try_get_token_encoder()
 
-    token_count = _estimate_tokens(messages)
+    token_count = _estimate_tokens(messages, encoder=token_encoder)
 
     store = SQLiteStore()
     final_messages = messages
@@ -214,20 +266,36 @@ def stm_compression_node(
                 continue
             content = m.content if isinstance(m.content, str) else json.dumps(m.content, ensure_ascii=False)
             role = "human" if isinstance(m, HumanMessage) else "assistant"
-            raw_rows.append((role, content, _estimate_tokens([m])))
+            raw_rows.append((role, content, _estimate_tokens([m], encoder=token_encoder)))
         store.save_raw_messages(session_id, raw_rows, conn=conn)
 
         threshold_exceeded = token_count > STM_TOKEN_THRESHOLD
         if threshold_exceeded:
-            keep_recent = STM_KEEP_RECENT if STM_KEEP_RECENT > 0 else len(messages)
-            keep_recent = min(len(messages), keep_recent)
-            recent_messages = messages[-keep_recent:] if keep_recent > 0 else []
-            recent_backbone = _filter_backbone(recent_messages)
-            old_messages = (
-                backbone[: len(backbone) - len(recent_backbone)]
-                if len(backbone) - len(recent_backbone) > 0
-                else []
-            )
+            recent_messages: List[BaseMessage]
+            token_budget_usable = token_encoder is not None
+            if token_budget_usable:
+                recent_budget = min(
+                    max(0, STM_RECENT_TARGET_TOKENS),
+                    max(0, STM_TOKEN_THRESHOLD - STM_SUMMARY_TARGET_TOKENS),
+                )
+                if recent_budget > 0:
+                    recent_messages = _select_recent_messages_by_token_budget(
+                        messages,
+                        recent_budget,
+                        encoder=token_encoder,
+                    )
+                else:
+                    keep_recent = STM_KEEP_RECENT if STM_KEEP_RECENT > 0 else len(messages)
+                    keep_recent = min(len(messages), keep_recent)
+                    recent_messages = messages[-keep_recent:] if keep_recent > 0 else []
+            else:
+                keep_recent = STM_KEEP_RECENT if STM_KEEP_RECENT > 0 else len(messages)
+                keep_recent = min(len(messages), keep_recent)
+                recent_messages = messages[-keep_recent:] if keep_recent > 0 else []
+
+            recent_start = max(0, len(messages) - len(recent_messages))
+            old_segment = messages[:recent_start]
+            old_messages = _filter_backbone(old_segment)
 
             if old_messages:
                 conversation_text = "\n".join(
@@ -237,13 +305,18 @@ def stm_compression_node(
                 compression_chain = STM_COMPRESSION_PROMPT | llm
                 summary_response = compression_chain.invoke({"conversation_to_compress": conversation_text})
                 summary_text = _normalize_summary_text(summary_response)
+                summary_text = _trim_text_to_token_budget(
+                    summary_text,
+                    STM_SUMMARY_TARGET_TOKENS,
+                    encoder=token_encoder,
+                )
 
                 header = f"[Compressed Context — {datetime.now(UTC).strftime('%Y-%m-%d')}]"
                 compressed_messages = [
                     SystemMessage(content=f"{header}\n{summary_text}")
                 ] + recent_messages
                 final_messages = compressed_messages
-                final_token_count = _estimate_tokens(final_messages)
+                final_token_count = _estimate_tokens(final_messages, encoder=token_encoder)
                 stm_compressed = True
 
                 store.save_compression_event(

@@ -1,5 +1,11 @@
 id: supervisor
-name: Main Supervisor
+description: >
+  Central orchestrator for the academic runtime. It decides whether to answer directly,
+  run a specialist subagent, or execute a workflow, while keeping decisions concise and evidence-oriented.
+input_requirements:
+  - input.user_text
+  - context.messages
+  - artifacts.*
 mode: chain
 system_prompt: |
   ## Layer 1: Stable System Context (most general, least changing)
@@ -19,7 +25,6 @@ system_prompt: |
 
   ## Layer 3: Dynamic Turn Context (most changing)
   user_text: {user_text}
-  memory_summary: {memory_summary}
   messages: {messages}
   artifacts_compact: {artifacts_compact}
   artifacts: {artifacts}

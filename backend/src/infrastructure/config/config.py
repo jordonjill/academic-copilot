@@ -41,6 +41,8 @@ def _env_path(name: str, default_relative: str) -> str:
 # ===== STM/LTM =====
 STM_TOKEN_THRESHOLD = _env_int("STM_TOKEN_THRESHOLD", 6000, minimum=1)
 STM_KEEP_RECENT = _env_int("STM_KEEP_RECENT", 6, minimum=0)
+STM_SUMMARY_TARGET_TOKENS = _env_int("STM_SUMMARY_TARGET_TOKENS", 1000, minimum=64)
+STM_RECENT_TARGET_TOKENS = _env_int("STM_RECENT_TARGET_TOKENS", 9000, minimum=0)
 LTM_MAX_ITEMS_PER_CATEGORY = _env_int("LTM_MAX_ITEMS_PER_CATEGORY", 24, minimum=1)
 LTM_PAST_TOPICS_MAX_ITEMS = _env_int("LTM_PAST_TOPICS_MAX_ITEMS", 20, minimum=1)
 LTM_FACT_MAX_CHARS = _env_int("LTM_FACT_MAX_CHARS", 240, minimum=16)

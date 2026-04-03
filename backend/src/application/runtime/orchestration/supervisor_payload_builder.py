@@ -51,7 +51,8 @@ class SupervisorPayloadBuilder:
             rows.append(
                 {
                     "id": spec.id,
-                    "name": spec.name,
+                    "description": spec.description,
+                    "input_requirements": list(spec.input_requirements),
                     "mode": spec.mode,
                     "tools": list(spec.tools),
                 }
@@ -67,7 +68,8 @@ class SupervisorPayloadBuilder:
             rows.append(
                 {
                     "id": spec.id,
-                    "name": spec.name,
+                    "description": spec.description,
+                    "input_requirements": list(spec.input_requirements),
                     "entry_node": spec.entry_node,
                     "node_count": len(spec.nodes),
                 }
@@ -137,7 +139,6 @@ class SupervisorPayloadBuilder:
                 state["context"].get("messages", []),
                 scope="supervisor",
             ),
-            "memory_summary": state["context"].get("memory_summary", ""),
             "artifacts": json.dumps(artifacts, ensure_ascii=False, default=str),
             "artifacts_compact": json.dumps(compact_artifacts, ensure_ascii=False, default=str),
             "last_model_output": state["io"].get("last_model_output", ""),

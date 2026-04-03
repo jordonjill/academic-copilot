@@ -23,11 +23,15 @@ class ContextPolicy:
     trace_output_preview_chars: int
     trace_reason_chars: int
     trace_instruction_chars: int
+    subagent_messages_token_cap: int = 0
+    supervisor_messages_token_cap: int = 0
 
     @classmethod
     def from_env(cls) -> "ContextPolicy":
         default_messages_window = max(1, read_env_int("CONTEXT_MESSAGES_WINDOW_DEFAULT", 12))
         supervisor_messages_window = max(1, read_env_int("CONTEXT_MESSAGES_WINDOW_SUPERVISOR", 20))
+        subagent_messages_token_cap = max(0, read_env_int("SUBAGENT_MESSAGES_TOKEN_CAP", 10000))
+        supervisor_messages_token_cap = max(0, read_env_int("SUPERVISOR_MESSAGES_TOKEN_CAP", 20000))
         trace_recent_window = max(1, read_env_int("CONTEXT_TRACE_WINDOW", 8))
         trace_max_items = max(trace_recent_window, read_env_int("CONTEXT_TRACE_MAX_ITEMS", 64))
         shared_summary_items = max(1, read_env_int("CONTEXT_SHARED_SUMMARY_ITEMS", 6))
@@ -38,6 +42,8 @@ class ContextPolicy:
         return cls(
             default_messages_window=default_messages_window,
             supervisor_messages_window=supervisor_messages_window,
+            subagent_messages_token_cap=subagent_messages_token_cap,
+            supervisor_messages_token_cap=supervisor_messages_token_cap,
             trace_recent_window=trace_recent_window,
             trace_max_items=trace_max_items,
             shared_summary_items=shared_summary_items,
@@ -51,6 +57,7 @@ class ContextPolicy:
 class ContextFacility:
     def __init__(self, policy: ContextPolicy | None = None) -> None:
         self.policy = policy or ContextPolicy.from_env()
+        self._token_encoder = _try_get_token_encoder()
 
     @classmethod
     def from_env(cls) -> "ContextFacility":
@@ -63,14 +70,48 @@ class ContextFacility:
         scope: _ContextScope = "default",
     ) -> str:
         window = self.policy.default_messages_window
+        token_cap = self.policy.subagent_messages_token_cap
         if scope == "supervisor":
             window = self.policy.supervisor_messages_window
+            token_cap = self.policy.supervisor_messages_token_cap
+        selected_messages: list[BaseMessage]
+        token_selected = self._select_recent_messages_by_token_cap(messages, token_cap)
+        if token_selected is not None:
+            selected_messages = token_selected
+        else:
+            selected_messages = messages[-window:]
         lines: list[str] = []
-        for message in messages[-window:]:
+        for message in selected_messages:
             role = message.__class__.__name__.replace("Message", "").lower() or "message"
             content = _coerce_message_content(message)
             lines.append(f"{role}: {content}")
         return "\n".join(lines)
+
+    def _select_recent_messages_by_token_cap(
+        self,
+        messages: list[BaseMessage],
+        token_cap: int,
+    ) -> list[BaseMessage] | None:
+        if token_cap <= 0:
+            return None
+        encoder = self._token_encoder
+        if encoder is None:
+            return None
+
+        selected_reversed: list[BaseMessage] = []
+        used_tokens = 0
+        for message in reversed(messages):
+            content = _coerce_message_content(message)
+            message_tokens = _estimate_text_tokens(content, encoder) + 4
+            if selected_reversed and (used_tokens + message_tokens) > token_cap:
+                break
+            selected_reversed.append(message)
+            used_tokens += message_tokens
+
+        if not selected_reversed:
+            return []
+        selected_reversed.reverse()
+        return selected_reversed
 
     def compact_artifacts(
         self,
@@ -184,3 +225,19 @@ def _coerce_message_content(message: BaseMessage) -> str:
     if isinstance(content, str):
         return content
     return json.dumps(content, ensure_ascii=False, default=str)
+
+
+def _try_get_token_encoder() -> Any | None:
+    try:
+        import tiktoken
+
+        return tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        return None
+
+
+def _estimate_text_tokens(text: str, encoder: Any) -> int:
+    try:
+        return len(encoder.encode(text))
+    except Exception:
+        return max(1, len(text) // 4)
