@@ -407,12 +407,23 @@ class RuntimeEngine:
     ) -> Any:
         ainvoke = getattr(runnable, "ainvoke", None)
         if callable(ainvoke):
-            if config is not None:
-                try:
-                    return await ainvoke(payload, config=config)
-                except TypeError:
-                    pass
-            return await ainvoke(payload)
+            try:
+                if config is not None:
+                    try:
+                        return await ainvoke(payload, config=config)
+                    except TypeError:
+                        pass
+                return await ainvoke(payload)
+            except AttributeError as exc:
+                # Some OpenAI-compatible backends intermittently return non-standard payloads
+                # on async path (e.g., raw string), which can surface as model_dump AttributeError
+                # inside langchain_openai. Fall back to sync invoke for resilience.
+                if "model_dump" not in str(exc):
+                    raise
+                logger.warning(
+                    "llm.ainvoke_attribute_error_fallback_to_invoke error=%s",
+                    str(exc),
+                )
         invoke = getattr(runnable, "invoke", None)
         if callable(invoke):
             if config is not None:

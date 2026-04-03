@@ -90,7 +90,10 @@ class SupervisorPayloadBuilder:
             artifacts = {}
             state["artifacts"] = artifacts
 
-        last_model_output = state.get("io", {}).get("last_model_output")
+        io_state = state.get("io", {})
+        last_model_output = io_state.get("last_execution_output")
+        if not isinstance(last_model_output, str) or not last_model_output.strip():
+            last_model_output = io_state.get("last_model_output")
         tool_outputs = state.get("io", {}).get("last_tool_outputs")
         tool_count = len(tool_outputs) if isinstance(tool_outputs, list) else 0
         self._context_facility.append_trace(
@@ -133,16 +136,17 @@ class SupervisorPayloadBuilder:
             artifacts if isinstance(artifacts, dict) else {},
             trace_key="execution_trace",
         )
+        raw_tool_outputs = state.get("io", {}).get("last_tool_outputs", [])
+        tool_outputs_count = len(raw_tool_outputs) if isinstance(raw_tool_outputs, list) else 0
         return {
             "user_text": state["input"].get("user_text", ""),
             "messages": self._context_facility.messages_to_text(
                 state["context"].get("messages", []),
                 scope="supervisor",
             ),
-            "artifacts": json.dumps(artifacts, ensure_ascii=False, default=str),
             "artifacts_compact": json.dumps(compact_artifacts, ensure_ascii=False, default=str),
-            "last_model_output": state["io"].get("last_model_output", ""),
-            "last_tool_outputs": json.dumps(state["io"].get("last_tool_outputs", []), ensure_ascii=False, default=str),
+            "last_execution_output": state["io"].get("last_execution_output", ""),
+            "last_tool_outputs_count": tool_outputs_count,
             "available_agents": json.dumps(available_agents, ensure_ascii=False),
             "available_workflows": json.dumps(available_workflows, ensure_ascii=False),
             "agent_capabilities": json.dumps(agent_capabilities, ensure_ascii=False, default=str),

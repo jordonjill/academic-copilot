@@ -73,6 +73,7 @@ class IsolationFacility:
             },
             "io": {
                 "last_model_output": None,
+                "last_execution_output": None,
                 "last_tool_outputs": [],
             },
             "artifacts": {
@@ -186,6 +187,7 @@ class IsolationFacility:
             },
             "io": {
                 "last_model_output": None,
+                "last_execution_output": None,
                 "last_tool_outputs": [],
             },
             "artifacts": {
@@ -330,6 +332,7 @@ class IsolationFacility:
     ) -> None:
         text = result.get("output_text", "")
         supervisor_state["io"]["last_model_output"] = text
+        supervisor_state["io"]["last_execution_output"] = text
         supervisor_state["io"]["last_tool_outputs"] = list(result.get("tool_outputs", []))
         if isinstance(text, str) and text.strip():
             supervisor_state["context"]["messages"].append(AIMessage(content=text))

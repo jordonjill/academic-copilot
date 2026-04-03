@@ -74,6 +74,7 @@ class AgentExecutionService:
         parsed = self._normalize_agent_parsed_payload(text, self._try_parse_json(text))
 
         state["io"]["last_model_output"] = text
+        state["io"]["last_execution_output"] = text
         state["io"]["last_tool_outputs"] = []
         state["context"]["messages"].append(AIMessage(content=text))
         self._apply_agent_output(state, node_name, agent_id, text, parsed)
@@ -104,6 +105,7 @@ class AgentExecutionService:
         parsed = self._normalize_agent_parsed_payload(text, self._try_parse_json(text))
 
         state["io"]["last_model_output"] = text
+        state["io"]["last_execution_output"] = text
         state["io"]["last_tool_outputs"] = []
         state["context"]["messages"].append(AIMessage(content=text))
         self._apply_agent_output(state, node_name, agent_id, text, parsed)
@@ -242,6 +244,7 @@ class AgentExecutionService:
 
         parsed = self._normalize_agent_parsed_payload(ai_text, self._try_parse_json(ai_text))
         state["io"]["last_model_output"] = ai_text
+        state["io"]["last_execution_output"] = ai_text
         state["io"]["last_tool_outputs"] = tool_outputs
         self._apply_agent_output(state, node_name, agent_id, ai_text, parsed)
 
@@ -273,5 +276,6 @@ class AgentExecutionService:
 
         parsed = self._normalize_agent_parsed_payload(ai_text, self._try_parse_json(ai_text))
         state["io"]["last_model_output"] = ai_text
+        state["io"]["last_execution_output"] = ai_text
         state["io"]["last_tool_outputs"] = tool_outputs
         self._apply_agent_output(state, node_name, agent_id, ai_text, parsed)

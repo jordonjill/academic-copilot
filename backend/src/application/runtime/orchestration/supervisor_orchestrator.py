@@ -82,6 +82,8 @@ class SupervisorOrchestrator:
         )
         started = perf_counter()
         subagent_call_counts: dict[str, int] = {}
+        workflow_calls_used = 0
+        max_workflow_calls_per_turn = 1
         turn_tool_budget = ensure_turn_tool_budget(state)
 
         for _ in range(max_steps):
@@ -101,6 +103,29 @@ class SupervisorOrchestrator:
             )
 
             if action == "run_workflow":
+                if workflow_calls_used >= max_workflow_calls_per_turn:
+                    self._logger.warning(
+                        "supervisor.workflow_limit_reached limit=%s",
+                        max_workflow_calls_per_turn,
+                    )
+                    state["context"]["messages"].append(
+                        SystemMessage(
+                            content=(
+                                f"Supervisor guardrail: workflow call limit reached "
+                                f"({max_workflow_calls_per_turn}) in current turn. Choose another action."
+                            )
+                        )
+                    )
+                    if decision.get("done"):
+                        final_text = decision.get("final_text")
+                        if not isinstance(final_text, str) or not final_text.strip():
+                            final_text = decision.get("message")
+                        if isinstance(final_text, str) and final_text.strip():
+                            state["output"]["final_text"] = final_text
+                            state["io"]["last_model_output"] = final_text
+                            state["context"]["messages"].append(AIMessage(content=final_text))
+                            return
+                    continue
                 workflow_id = resolve_workflow_target(decision, state)
                 if workflow_id and workflow_id in self._registry.workflows:
                     append_execution_trace(
@@ -111,8 +136,8 @@ class SupervisorOrchestrator:
                         instruction=str(decision.get("instruction") or ""),
                     )
                     execute_workflow_isolated(state, workflow_id, step_callback)
-                    finalize_with_supervisor(state, workflow_id)
-                    return
+                    workflow_calls_used += 1
+                    continue
                 action = "direct_reply"
 
             if action == "run_agent":
@@ -197,10 +222,12 @@ class SupervisorOrchestrator:
                     reason=str(decision.get("reason") or ""),
                     instruction="",
                 )
-                state["output"]["final_text"] = final_text
                 state["io"]["last_model_output"] = final_text
-                state["context"]["messages"].append(AIMessage(content=final_text))
-                return
+                if bool(decision.get("done")):
+                    state["output"]["final_text"] = final_text
+                    state["context"]["messages"].append(AIMessage(content=final_text))
+                    return
+                continue
 
         if not state["output"].get("final_text"):
             fallback = state["io"].get("last_model_output") or "No output produced."
@@ -245,6 +272,8 @@ class SupervisorOrchestrator:
         )
         started = perf_counter()
         subagent_call_counts: dict[str, int] = {}
+        workflow_calls_used = 0
+        max_workflow_calls_per_turn = 1
         turn_tool_budget = ensure_turn_tool_budget(state)
 
         for _ in range(max_steps):
@@ -264,6 +293,29 @@ class SupervisorOrchestrator:
             )
 
             if action == "run_workflow":
+                if workflow_calls_used >= max_workflow_calls_per_turn:
+                    self._logger.warning(
+                        "supervisor.workflow_limit_reached limit=%s",
+                        max_workflow_calls_per_turn,
+                    )
+                    state["context"]["messages"].append(
+                        SystemMessage(
+                            content=(
+                                f"Supervisor guardrail: workflow call limit reached "
+                                f"({max_workflow_calls_per_turn}) in current turn. Choose another action."
+                            )
+                        )
+                    )
+                    if decision.get("done"):
+                        final_text = decision.get("final_text")
+                        if not isinstance(final_text, str) or not final_text.strip():
+                            final_text = decision.get("message")
+                        if isinstance(final_text, str) and final_text.strip():
+                            state["output"]["final_text"] = final_text
+                            state["io"]["last_model_output"] = final_text
+                            state["context"]["messages"].append(AIMessage(content=final_text))
+                            return
+                    continue
                 workflow_id = resolve_workflow_target(decision, state)
                 if workflow_id and workflow_id in self._registry.workflows:
                     append_execution_trace(
@@ -274,8 +326,8 @@ class SupervisorOrchestrator:
                         instruction=str(decision.get("instruction") or ""),
                     )
                     await execute_workflow_isolated_async(state, workflow_id, step_callback)
-                    await finalize_with_supervisor_async(state, workflow_id)
-                    return
+                    workflow_calls_used += 1
+                    continue
                 action = "direct_reply"
 
             if action == "run_agent":
@@ -360,10 +412,12 @@ class SupervisorOrchestrator:
                     reason=str(decision.get("reason") or ""),
                     instruction="",
                 )
-                state["output"]["final_text"] = final_text
                 state["io"]["last_model_output"] = final_text
-                state["context"]["messages"].append(AIMessage(content=final_text))
-                return
+                if bool(decision.get("done")):
+                    state["output"]["final_text"] = final_text
+                    state["context"]["messages"].append(AIMessage(content=final_text))
+                    return
+                continue
 
         if not state["output"].get("final_text"):
             fallback = state["io"].get("last_model_output") or "No output produced."

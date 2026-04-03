@@ -397,6 +397,7 @@ class AcademicCopilotApp:
             },
             "io": {
                 "last_model_output": None,
+                "last_execution_output": None,
                 "last_tool_outputs": [],
             },
             "artifacts": {

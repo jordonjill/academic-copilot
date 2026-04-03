@@ -123,6 +123,7 @@ class RuntimeResultService:
         final_text = (
             state["output"].get("final_text")
             or self.best_available_final_text(state)
+            or state["io"].get("last_execution_output")
             or state["io"].get("last_model_output")
         )
         return {

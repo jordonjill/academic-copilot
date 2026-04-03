@@ -27,6 +27,7 @@ class RuntimeMetaState(TypedDict):
 
 class RuntimeIOState(TypedDict):
     last_model_output: Optional[str]
+    last_execution_output: Optional[str]
     last_tool_outputs: list[Any]
 
 

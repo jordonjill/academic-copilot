@@ -32,7 +32,7 @@ def _state() -> dict:
             "loop_count": 0,
             "status": "idle",
         },
-        "io": {"last_model_output": None, "last_tool_outputs": []},
+        "io": {"last_model_output": None, "last_execution_output": None, "last_tool_outputs": []},
         "artifacts": {"topic": None, "shared": {}},
         "output": {"final_text": None, "final_structured": None},
         "errors": {"last_error": None},
@@ -108,6 +108,60 @@ def test_runtime_engine_supervisor_direct_reply(monkeypatch, tmp_path):
     result = engine.run_turn(_state())
     assert result["success"] is True
     assert result["message"] == "direct ok"
+
+
+def test_runtime_engine_supervisor_direct_reply_done_false_continues(monkeypatch, tmp_path):
+    engine = RuntimeEngine(registry=_registry(tmp_path))
+    monkeypatch.setattr(engine, "_resolve_llm", lambda spec: object())
+
+    decisions = iter(
+        [
+            {"action": "direct_reply", "message": "interim draft", "done": False},
+            {"action": "run_subagent", "target": "researcher", "instruction": "refine", "done": False},
+            {"action": "direct_reply", "message": "final answer", "done": True},
+        ]
+    )
+    researcher_calls = {"count": 0}
+
+    def _fake_build(spec, llm, tool_resolver):
+        del llm, tool_resolver
+        if spec.id == "supervisor":
+            return _FakeRunnable(lambda payload: json.dumps(next(decisions)))
+        if spec.id == "researcher":
+            def _invoke(payload):
+                del payload
+                researcher_calls["count"] += 1
+                return "research output"
+
+            return _FakeRunnable(_invoke)
+        raise AssertionError(f"Unexpected agent execution: {spec.id}")
+
+    monkeypatch.setattr("src.application.runtime.runtime_engine.build_agent_from_spec", _fake_build)
+
+    state = _state()
+    result = engine.run_turn(state)
+    assert result["success"] is True
+    assert result["message"] == "final answer"
+    assert researcher_calls["count"] == 1
+    assert state["runtime"]["step_count"] == 1
+
+
+def test_runtime_engine_invoke_async_fallbacks_to_sync_invoke_on_model_dump_attr_error(tmp_path):
+    engine = RuntimeEngine(registry=_registry(tmp_path))
+
+    class _Runnable:
+        async def ainvoke(self, payload, config=None):
+            del payload, config
+            raise AttributeError("'str' object has no attribute 'model_dump'")
+
+        def invoke(self, payload, config=None):
+            del config
+            return {"ok": True, "payload": payload}
+
+    result = asyncio.run(engine._invoke_async(_Runnable(), {"x": 1}))
+    assert isinstance(result, dict)
+    assert result.get("ok") is True
+    assert result.get("payload") == {"x": 1}
 
 
 def test_runtime_engine_logs_warning_when_supervisor_returns_empty(monkeypatch, tmp_path, caplog):
@@ -230,14 +284,14 @@ def test_runtime_engine_supervisor_starts_workflow(monkeypatch, tmp_path):
     assert state["runtime"]["workflow_id"] is None
     assert state["runtime"]["step_count"] >= 1
     assert len(supervisor_payloads) == 2
-    finalize_payload = supervisor_payloads[-1]
-    assert finalize_payload["workflow_completed"] is True
-    assert finalize_payload["requested_workflow_id"] == "wf1"
-    assert "available_agents" in finalize_payload
-    assert "available_workflows" in finalize_payload
-    assert finalize_payload["ltm_profile"] == '{"profile":"ok"}'
-    assert "step_count" in finalize_payload
-    assert "loop_count" in finalize_payload
+    followup_payload = supervisor_payloads[-1]
+    assert followup_payload["workflow_completed"] is False
+    assert followup_payload["requested_workflow_id"] == ""
+    assert "available_agents" in followup_payload
+    assert "available_workflows" in followup_payload
+    assert followup_payload["ltm_profile"] == '{"profile":"ok"}'
+    assert "step_count" in followup_payload
+    assert "loop_count" in followup_payload
 
 
 def test_runtime_engine_workflow_loop_counts_entry_revisit(monkeypatch, tmp_path):
