@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 from langchain_core.tools import tool
 
@@ -39,6 +41,12 @@ def _safe_subdir(path: str) -> tuple[str, str | None]:
     if not _SAFE_SUBDIR_PATTERN.fullmatch(normalized):
         return "", "output_subdir violated safe pattern and was ignored"
     return normalized, None
+
+
+def _system_export_stem() -> str:
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    rand = uuid4().hex[:8]
+    return f"report_output_{ts}_{rand}"
 
 
 @tool
@@ -112,11 +120,14 @@ def academic_export(
     export_pdf_enabled: bool = True,
 ) -> dict[str, Any]:
     """Unified academic report export to DOCX/PDF with normalized output."""
-    stem, stem_warning = _safe_stem(base_filename)
+    sanitized_stem, stem_warning = _safe_stem(base_filename)
+    stem = _system_export_stem()
     subdir, subdir_warning = _safe_subdir(output_subdir)
     warnings: list[str] = []
     if stem_warning:
         warnings.append(stem_warning)
+    if base_filename and sanitized_stem != "report_output":
+        warnings.append("base_filename is ignored; using system-generated filename to avoid overwrite")
     if subdir_warning:
         warnings.append(subdir_warning)
 

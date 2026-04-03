@@ -1,6 +1,8 @@
 import pytest
+from pathlib import Path
 
 from src.infrastructure.tools import academic_export, academic_read, export_docx, export_pdf
+from src.infrastructure.tools.pdf_export import _wrap_text_lines
 
 
 def test_export_docx_creates_file_in_base_dir(tmp_path, monkeypatch):
@@ -37,6 +39,24 @@ def test_export_pdf_creates_file_in_base_dir(tmp_path, monkeypatch):
     assert result == {"path": str(expected_path)}
     assert expected_path.exists()
     assert expected_path.stat().st_size > 0
+
+
+def test_pdf_wrap_text_lines_wraps_long_line():
+    wrapped = _wrap_text_lines(
+        "abcdefghij",
+        max_width=4,
+        measure=lambda s: float(len(s)),
+    )
+    assert wrapped == ["abcd", "efgh", "ij"]
+
+
+def test_pdf_wrap_text_lines_preserves_blank_lines():
+    wrapped = _wrap_text_lines(
+        "line1\n\nline2",
+        max_width=100,
+        measure=lambda s: float(len(s)),
+    )
+    assert wrapped == ["line1", "", "line2"]
 
 
 def test_export_rejects_paths_outside_base_dir(tmp_path, monkeypatch):
@@ -87,8 +107,14 @@ def test_academic_export_writes_docx_and_pdf(tmp_path, monkeypatch):
     exports = result["artifacts"]["report_exports"]
     assert "docx_path" in exports
     assert "pdf_path" in exports
-    assert (base_dir / "academic" / "proposal_v1.docx").exists()
-    assert (base_dir / "academic" / "proposal_v1.pdf").exists()
+    docx_path = Path(exports["docx_path"])
+    pdf_path = Path(exports["pdf_path"])
+    assert docx_path.exists()
+    assert pdf_path.exists()
+    assert docx_path.parent == base_dir / "academic"
+    assert pdf_path.parent == base_dir / "academic"
+    assert docx_path.name.startswith("report_output_")
+    assert pdf_path.name.startswith("report_output_")
 
 
 def test_academic_export_ignores_env_style_output_subdir(tmp_path, monkeypatch):
@@ -108,8 +134,14 @@ def test_academic_export_ignores_env_style_output_subdir(tmp_path, monkeypatch):
     assert isinstance(result.get("warnings"), list)
     assert any("output_subdir looked like an env var token" in msg for msg in result["warnings"])
     exports = result["artifacts"]["report_exports"]
-    assert (base_dir / "report_output.docx").exists()
-    assert (base_dir / "report_output.pdf").exists()
+    docx_path = Path(exports["docx_path"])
+    pdf_path = Path(exports["pdf_path"])
+    assert docx_path.exists()
+    assert pdf_path.exists()
+    assert docx_path.parent == base_dir
+    assert pdf_path.parent == base_dir
+    assert docx_path.name.startswith("report_output_")
+    assert pdf_path.name.startswith("report_output_")
     assert "EXPORT_BASE_DIR" not in exports["docx_path"]
     assert "EXPORT_BASE_DIR" not in exports["pdf_path"]
 
@@ -130,7 +162,34 @@ def test_academic_export_replaces_unsafe_base_filename(tmp_path, monkeypatch):
     assert isinstance(result.get("warnings"), list)
     assert any("base_filename looked like an env var token" in msg for msg in result["warnings"])
     exports = result["artifacts"]["report_exports"]
-    assert (base_dir / "report_output.docx").exists()
-    assert (base_dir / "report_output.pdf").exists()
-    assert exports["docx_path"].endswith("report_output.docx")
-    assert exports["pdf_path"].endswith("report_output.pdf")
+    docx_path = Path(exports["docx_path"])
+    pdf_path = Path(exports["pdf_path"])
+    assert docx_path.exists()
+    assert pdf_path.exists()
+    assert docx_path.name.startswith("report_output_")
+    assert pdf_path.name.startswith("report_output_")
+    assert docx_path.suffix == ".docx"
+    assert pdf_path.suffix == ".pdf"
+
+
+def test_academic_export_uses_unique_names_across_calls(tmp_path, monkeypatch):
+    base_dir = tmp_path / "exports"
+    monkeypatch.setenv("EXPORT_BASE_DIR", str(base_dir))
+
+    r1 = academic_export.invoke(
+        {
+            "title": "Proposal",
+            "content": "line1\nline2",
+        }
+    )
+    r2 = academic_export.invoke(
+        {
+            "title": "Proposal",
+            "content": "line1\nline2",
+        }
+    )
+
+    e1 = r1["artifacts"]["report_exports"]
+    e2 = r2["artifacts"]["report_exports"]
+    assert e1["docx_path"] != e2["docx_path"]
+    assert e1["pdf_path"] != e2["pdf_path"]
