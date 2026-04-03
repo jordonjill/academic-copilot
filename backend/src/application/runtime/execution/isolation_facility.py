@@ -29,6 +29,7 @@ class IsolationFacility:
         instruction: Any,
         *,
         input_artifact_keys: Optional[list[str]] = None,
+        inline_input_artifacts: Optional[dict[str, Any]] = None,
         node_name: Optional[str] = None,
         runtime_mode: str = "subagent",
     ) -> RuntimeState:
@@ -37,7 +38,11 @@ class IsolationFacility:
             task_text = instruction.strip()
         if not task_text:
             task_text = parent_state["input"].get("user_text", "")
-        selected_input_artifacts = self.select_input_artifacts(parent_state, input_artifact_keys)
+        selected_input_artifacts = self.compose_input_artifacts(
+            parent_state,
+            input_artifact_keys=input_artifact_keys,
+            inline_input_artifacts=inline_input_artifacts,
+        )
         task_input = AgentTaskInput(
             task_id=f"{agent_id}:{parent_state['runtime'].get('step_count', 0)}",
             instruction=task_text,
@@ -150,11 +155,56 @@ class IsolationFacility:
             if key not in excluded
         }
 
+    def coerce_inline_input_artifacts(
+        self,
+        inline_input_artifacts: Optional[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not isinstance(inline_input_artifacts, dict):
+            return {}
+        cleaned: dict[str, Any] = {}
+        for key, value in inline_input_artifacts.items():
+            if not isinstance(key, str):
+                continue
+            text = key.strip()
+            if not text:
+                continue
+            cleaned[text] = value
+        return cleaned
+
+    def compose_input_artifacts(
+        self,
+        parent_state: RuntimeState,
+        *,
+        input_artifact_keys: Optional[list[str]],
+        inline_input_artifacts: Optional[dict[str, Any]],
+    ) -> dict[str, Any]:
+        selected = self.select_input_artifacts(parent_state, input_artifact_keys)
+        inline = self.coerce_inline_input_artifacts(inline_input_artifacts)
+        if not inline:
+            return selected
+        merged = dict(selected)
+        for key, value in inline.items():
+            if self._is_effectively_empty_value(merged.get(key)):
+                merged[key] = value
+        return merged
+
+    @staticmethod
+    def _is_effectively_empty_value(value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return not value.strip()
+        if isinstance(value, (list, tuple, set, dict)):
+            return len(value) == 0
+        return False
+
     def build_isolated_workflow_state(
         self,
         parent_state: RuntimeState,
         workflow_id: str,
         runner_input: Optional[WorkflowRunnerInput] = None,
+        *,
+        inline_input_artifacts: Optional[dict[str, Any]] = None,
     ) -> RuntimeState:
         user_text = parent_state["input"].get("user_text", "")
         artifacts_topic = None
@@ -165,7 +215,11 @@ class IsolationFacility:
             runner_input = WorkflowRunnerInput(
                 workflow_id=workflow_id,
                 instruction=user_text,
-                seed_artifacts=self.select_input_artifacts(parent_state, input_artifact_keys=None),
+                seed_artifacts=self.compose_input_artifacts(
+                    parent_state,
+                    input_artifact_keys=None,
+                    inline_input_artifacts=inline_input_artifacts,
+                ),
             )
         return {
             "input": {

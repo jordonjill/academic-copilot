@@ -240,6 +240,56 @@ def test_runtime_engine_supervisor_runs_subagent_then_replies(monkeypatch, tmp_p
     )
 
 
+def test_runtime_engine_supervisor_inline_input_artifacts_fill_empty_only(monkeypatch, tmp_path):
+    engine = RuntimeEngine(registry=_registry(tmp_path))
+    monkeypatch.setattr(engine, "_resolve_llm", lambda spec: object())
+
+    decisions = iter(
+        [
+            {
+                "action": "run_agent",
+                "target": "researcher",
+                "instruction": "export current draft",
+                "input_artifact_keys": ["draft"],
+                "inline_input_artifacts": {
+                    "draft": "INLINE_DRAFT_BODY",
+                    "report_title": "Inline Title",
+                },
+                "done": False,
+            },
+            {"action": "direct_reply", "message": "ok", "done": True},
+        ]
+    )
+    researcher_payloads: list[dict] = []
+
+    def _fake_build(spec, llm, tool_resolver):
+        del llm, tool_resolver
+        if spec.id == "supervisor":
+            return _FakeRunnable(lambda payload: json.dumps(next(decisions)))
+        if spec.id == "researcher":
+            def _invoke(payload):
+                researcher_payloads.append(payload)
+                return "research output"
+
+            return _FakeRunnable(_invoke)
+        raise AssertionError(f"Unexpected agent execution: {spec.id}")
+
+    monkeypatch.setattr("src.application.runtime.runtime_engine.build_agent_from_spec", _fake_build)
+
+    state = _state()
+    state["artifacts"]["draft"] = "ORIGINAL_DRAFT_BODY"
+    result = engine.run_turn(state)
+
+    assert result["success"] is True
+    assert result["message"] == "ok"
+    assert len(researcher_payloads) == 1
+
+    payload = researcher_payloads[0]
+    artifacts = json.loads(payload["artifacts"])
+    assert artifacts["draft"] == "ORIGINAL_DRAFT_BODY"
+    assert artifacts["report_title"] == "Inline Title"
+
+
 def test_runtime_engine_supervisor_starts_workflow(monkeypatch, tmp_path):
     engine = RuntimeEngine(registry=_registry(tmp_path))
     monkeypatch.setattr(engine, "_resolve_llm", lambda spec: object())

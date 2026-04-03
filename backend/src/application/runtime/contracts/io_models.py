@@ -15,6 +15,7 @@ class SupervisorDecision(BaseModel):
     target: Optional[str] = None
     instruction: Optional[str] = None
     input_artifact_keys: List[str] = Field(default_factory=list)
+    inline_input_artifacts: Dict[str, Any] = Field(default_factory=dict)
     done: bool = False
     final_text: Optional[str] = None
     reason: str = ""
@@ -31,10 +32,25 @@ class SupervisorDecision(BaseModel):
             for item in value:
                 if isinstance(item, str):
                     text = item.strip()
-                    if text:
-                        result.append(text)
+                if text:
+                    result.append(text)
             return result
         return []
+
+    @field_validator("inline_input_artifacts", mode="before")
+    @classmethod
+    def _coerce_inline_input_artifacts(cls, value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        cleaned: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                continue
+            text = key.strip()
+            if not text:
+                continue
+            cleaned[text] = item
+        return cleaned
 
 
 class AgentTaskConstraints(BaseModel):

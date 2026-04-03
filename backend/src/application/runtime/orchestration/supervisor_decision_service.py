@@ -195,6 +195,7 @@ class SupervisorDecisionService:
             "done": decision_model.done,
             "reason": decision_model.reason,
             "input_artifact_keys": list(decision_model.input_artifact_keys),
+            "inline_input_artifacts": dict(decision_model.inline_input_artifacts),
         }
         if isinstance(decision_model.instruction, str) and decision_model.instruction.strip():
             normalized["instruction"] = decision_model.instruction
@@ -231,6 +232,15 @@ class SupervisorDecisionService:
             "target": target if isinstance(target, str) and target.strip() else None,
             "instruction": raw_payload.get("instruction") if isinstance(raw_payload.get("instruction"), str) else None,
             "input_artifact_keys": raw_payload.get("input_artifact_keys", []),
+            "inline_input_artifacts": (
+                raw_payload.get("inline_input_artifacts")
+                if isinstance(raw_payload.get("inline_input_artifacts"), dict)
+                else (
+                    raw_payload.get("input_artifacts")
+                    if isinstance(raw_payload.get("input_artifacts"), dict)
+                    else {}
+                )
+            ),
             "done": bool(raw_payload.get("done", False)),
             "final_text": final_text,
             "reason": raw_payload.get("reason") if isinstance(raw_payload.get("reason"), str) else "",

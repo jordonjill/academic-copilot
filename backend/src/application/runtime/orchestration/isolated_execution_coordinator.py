@@ -115,6 +115,7 @@ class IsolatedExecutionCoordinator:
         agent_id: str,
         instruction: Any,
         input_artifact_keys: Optional[list[str]] = None,
+        inline_input_artifacts: Optional[dict[str, Any]] = None,
         *,
         tool_budget: Optional[dict[str, Any]] = None,
     ) -> None:
@@ -123,6 +124,7 @@ class IsolatedExecutionCoordinator:
             agent_id,
             instruction,
             input_artifact_keys=input_artifact_keys,
+            inline_input_artifacts=inline_input_artifacts,
             node_name=agent_id,
             runtime_mode=str(state.get("runtime", {}).get("mode", "subagent")),
         )
@@ -141,6 +143,7 @@ class IsolatedExecutionCoordinator:
         agent_id: str,
         instruction: Any,
         input_artifact_keys: Optional[list[str]] = None,
+        inline_input_artifacts: Optional[dict[str, Any]] = None,
         *,
         tool_budget: Optional[dict[str, Any]] = None,
     ) -> None:
@@ -149,6 +152,7 @@ class IsolatedExecutionCoordinator:
             agent_id,
             instruction,
             input_artifact_keys=input_artifact_keys,
+            inline_input_artifacts=inline_input_artifacts,
             node_name=agent_id,
             runtime_mode=str(state.get("runtime", {}).get("mode", "subagent")),
         )
@@ -166,13 +170,18 @@ class IsolatedExecutionCoordinator:
         state: RuntimeState,
         workflow_id: str,
         step_callback: Optional[StepCallback],
+        inline_input_artifacts: Optional[dict[str, Any]] = None,
     ) -> None:
         workflow_spec = self._registry.workflows[workflow_id]
         max_steps = workflow_spec.resolved_max_steps()
         runner_input = WorkflowRunnerInput(
             workflow_id=workflow_id,
             instruction=state["input"].get("user_text", ""),
-            seed_artifacts=self._isolation.select_input_artifacts(state, input_artifact_keys=None),
+            seed_artifacts=self._isolation.compose_input_artifacts(
+                state,
+                input_artifact_keys=None,
+                inline_input_artifacts=inline_input_artifacts,
+            ),
             limits={
                 "max_steps": max_steps,
                 "max_loops": workflow_spec.resolved_max_loops(max_steps=max_steps),
@@ -194,13 +203,18 @@ class IsolatedExecutionCoordinator:
         state: RuntimeState,
         workflow_id: str,
         step_callback: Optional[StepCallback],
+        inline_input_artifacts: Optional[dict[str, Any]] = None,
     ) -> None:
         workflow_spec = self._registry.workflows[workflow_id]
         max_steps = workflow_spec.resolved_max_steps()
         runner_input = WorkflowRunnerInput(
             workflow_id=workflow_id,
             instruction=state["input"].get("user_text", ""),
-            seed_artifacts=self._isolation.select_input_artifacts(state, input_artifact_keys=None),
+            seed_artifacts=self._isolation.compose_input_artifacts(
+                state,
+                input_artifact_keys=None,
+                inline_input_artifacts=inline_input_artifacts,
+            ),
             limits={
                 "max_steps": max_steps,
                 "max_loops": workflow_spec.resolved_max_loops(max_steps=max_steps),

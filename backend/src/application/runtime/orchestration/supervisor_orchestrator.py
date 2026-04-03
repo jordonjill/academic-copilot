@@ -22,8 +22,8 @@ AsyncDecide = Callable[[RuntimeState, AgentSpec, Optional[str]], Awaitable[dict[
 ResolveWorkflowTarget = Callable[[dict[str, Any], RuntimeState], Optional[str]]
 ResolveSubagentTarget = Callable[[dict[str, Any]], Optional[str]]
 AppendExecutionTrace = Callable[..., None]
-SyncExecuteWorkflowIsolated = Callable[[RuntimeState, str, Optional[StepCallback]], None]
-AsyncExecuteWorkflowIsolated = Callable[[RuntimeState, str, Optional[StepCallback]], Awaitable[None]]
+SyncExecuteWorkflowIsolated = Callable[[RuntimeState, str, Optional[StepCallback], Optional[dict[str, Any]]], None]
+AsyncExecuteWorkflowIsolated = Callable[[RuntimeState, str, Optional[StepCallback], Optional[dict[str, Any]]], Awaitable[None]]
 SyncExecuteSubagentIsolated = Callable[..., None]
 AsyncExecuteSubagentIsolated = Callable[..., Awaitable[None]]
 EnsureTurnBudget = Callable[[RuntimeState], dict[str, Any]]
@@ -135,7 +135,15 @@ class SupervisorOrchestrator:
                         reason=str(decision.get("reason") or ""),
                         instruction=str(decision.get("instruction") or ""),
                     )
-                    execute_workflow_isolated(state, workflow_id, step_callback)
+                    inline_input_artifacts = decision.get("inline_input_artifacts")
+                    execute_workflow_isolated(
+                        state,
+                        workflow_id,
+                        step_callback,
+                        inline_input_artifacts
+                        if isinstance(inline_input_artifacts, dict)
+                        else None,
+                    )
                     workflow_calls_used += 1
                     continue
                 action = "direct_reply"
@@ -176,11 +184,13 @@ class SupervisorOrchestrator:
                             HumanMessage(content=f"Supervisor task for {agent_id}: {instruction}")
                         )
                     input_artifact_keys = decision.get("input_artifact_keys")
+                    inline_input_artifacts = decision.get("inline_input_artifacts")
                     execute_subagent_isolated(
                         state,
                         agent_id,
                         instruction,
                         input_artifact_keys if isinstance(input_artifact_keys, list) else None,
+                        inline_input_artifacts if isinstance(inline_input_artifacts, dict) else None,
                         tool_budget=turn_tool_budget,
                     )
                     append_execution_trace(
@@ -325,7 +335,15 @@ class SupervisorOrchestrator:
                         reason=str(decision.get("reason") or ""),
                         instruction=str(decision.get("instruction") or ""),
                     )
-                    await execute_workflow_isolated_async(state, workflow_id, step_callback)
+                    inline_input_artifacts = decision.get("inline_input_artifacts")
+                    await execute_workflow_isolated_async(
+                        state,
+                        workflow_id,
+                        step_callback,
+                        inline_input_artifacts
+                        if isinstance(inline_input_artifacts, dict)
+                        else None,
+                    )
                     workflow_calls_used += 1
                     continue
                 action = "direct_reply"
@@ -366,11 +384,13 @@ class SupervisorOrchestrator:
                             HumanMessage(content=f"Supervisor task for {agent_id}: {instruction}")
                         )
                     input_artifact_keys = decision.get("input_artifact_keys")
+                    inline_input_artifacts = decision.get("inline_input_artifacts")
                     await execute_subagent_isolated_async(
                         state,
                         agent_id,
                         instruction,
                         input_artifact_keys if isinstance(input_artifact_keys, list) else None,
+                        inline_input_artifacts if isinstance(inline_input_artifacts, dict) else None,
                         tool_budget=turn_tool_budget,
                     )
                     append_execution_trace(

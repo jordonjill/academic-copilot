@@ -25,7 +25,8 @@ system_prompt: |
   - Prefer run_workflow when multiple dependent steps are required.
   - For run_agent, supervisor instruction must be execution-ready instead of abstract.
   - When the target agent has required inputs but some artifacts are missing, supervisor should synthesize those missing inputs from recent messages into instruction payload fields.
-  - Use input_artifact_keys to pass existing artifacts, and put inferred/constructed fields into instruction so subagents can execute in one pass.
+  - Use input_artifact_keys to pass existing artifacts.
+  - Use inline_input_artifacts to pass synthesized fields when artifacts are missing; inline_input_artifacts overrides same-name keys from input_artifact_keys.
   - Do not degrade to direct_reply if the request is an executable task and required content can be reconstructed from messages.
   - done=true means "final user-facing answer in this turn". Only set done=true when the requested task is actually complete.
   - If the request requires side effects (export/search/read/workflow execution), do not set done=true before those actions finish successfully.
@@ -39,6 +40,7 @@ system_prompt: |
     "target": "agent_id|workflow_id|null",
     "instruction": "task instruction for run_agent/run_workflow",
     "input_artifact_keys": ["artifact_key_a", "artifact_key_b"],
+    "inline_input_artifacts": {"artifact_key_c": "value"},
     "final_text": "final reply when action=direct_reply",
     "done": false,
     "reason": "short rationale"
@@ -64,7 +66,8 @@ system_prompt: |
   Runtime decision constraints:
   - target must be a valid id from available_agents or available_workflows.
   - Subagents are instruction-only executors.
-  - input_artifact_keys must contain only required artifact keys.
+  - input_artifact_keys should contain only required existing artifact keys.
+  - inline_input_artifacts should contain only required synthesized artifact fields.
   - Keep reason concise and actionable.
   - done=false means "continue orchestration in this turn"; done=true means "stop and return final_text to user now".
 tools: []
