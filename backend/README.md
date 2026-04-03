@@ -32,9 +32,9 @@ backend/
 
 ## Schema Layering Convention
 
-- Runtime state contract lives in `application/runtime/state_types.py` (framework-level, generic).
+- Runtime state contract lives in `application/runtime/contracts/state_types.py` (framework-level, generic).
 - API request/response schema lives in `interfaces/api/schemas.py` (transport boundary).
-- Config schema for LLM/Agent/Workflow lives in `application/runtime/spec_models.py` (YAML contract).
+- Config schema for LLM/Agent/Workflow lives in `application/runtime/contracts/spec_models.py` (YAML contract).
 - Workflow-specific or business-specific structured schema must live with the owning module/workflow, not in a global shared domain layer.
 
 ## Environment Variables
@@ -47,7 +47,7 @@ Copy `.env.example` to `.env` and set:
 - `DEEPSEEK_API_KEY` (optional, if using DeepSeek profile)
 - `QWEN_API_KEY` (optional, if using Qwen profile)
 - `OLLAMA_API_KEY` (optional, if using Ollama profile; can be any non-empty placeholder for local no-auth deployments)
-- `TAVILY_API_KEY`
+- `TAVILY_API_KEY` (recommended for web search fallback; optional if you only rely on arXiv source)
 - `JINA_API_KEY` (optional)
 - `ZOTERO_API_KEY` (optional)
 - Runtime/memory/tool envs shown in `.env.example` (`SUPERVISOR_MAX_*`, `WORKFLOW_MAX_*`, `CHAT_TURN_TIMEOUT_SECONDS`, `LLM_REQUEST_TIMEOUT_SECONDS`, `CHAT_MAX_WORKERS`, etc.)
@@ -143,11 +143,34 @@ Memory is on the main chat path:
 - STM (short-term):
   - Before each turn: load latest `working_context` snapshot from SQLite into runtime messages
   - After each turn: persist raw/backbone/context snapshots and apply compression when threshold is exceeded
+  - Compression trigger is token-based (`STM_TOKEN_THRESHOLD`)
+  - Compression target keeps:
+    - summary budget (`STM_SUMMARY_TARGET_TOKENS`)
+    - recent context budget (`STM_RECENT_TARGET_TOKENS`)
+  - If token budgeting is unavailable, fallback to count-based recent keep (`STM_KEEP_RECENT`)
   - SQLite tables: `raw_messages`, `working_context`, `compression_events`
 - LTM (long-term):
   - Triggered after STM compression events
   - Extracted facts are merged and written to `data/users/<user_id>/memory.md`
   - A compact memory summary is injected into supervisor context in later turns
+  - Injection payload key: `ltm_profile`
+
+Relevant memory/window envs:
+
+- `STM_TOKEN_THRESHOLD`
+- `STM_SUMMARY_TARGET_TOKENS`
+- `STM_RECENT_TARGET_TOKENS`
+- `STM_KEEP_RECENT` (fallback)
+- `SUPERVISOR_MESSAGES_TOKEN_CAP`
+- `SUBAGENT_MESSAGES_TOKEN_CAP`
+
+Conversation persistence details:
+
+- SQLite database defaults to `data/conversations.db` (configurable by `CONVERSATION_DB`).
+- `messages` / `raw_messages` persist the conversation backbone (`HumanMessage` / `AIMessage` text).
+- Subagent/workflow final returned text is appended into supervisor conversation messages and therefore persisted.
+- Supervisor internal decision JSON is not persisted as a standalone DB field; it only affects orchestration and resulting messages/artifacts.
+- Workflow internal per-node transient state is isolated during execution; persisted conversation stores the returned output text, while detailed runtime traces live in in-memory/artifact payloads for the turn.
 
 ## Troubleshooting
 
