@@ -240,10 +240,7 @@ class AcademicCopilotApp:
                 }
             )
 
-        captured_steps: list[Dict[str, Any]] = []
-
-        def _capture_step(step: Dict[str, Any]) -> None:
-            captured_steps.append(step)
+        async def _capture_step(step: Dict[str, Any]) -> None:
             _log_event(
                 "chat.turn.step",
                 session_id=sid,
@@ -252,6 +249,8 @@ class AcademicCopilotApp:
                 agent_id=step.get("agent_id"),
                 next_node=step.get("next_node"),
             )
+            if websocket_send:
+                await websocket_send(self._build_step_event(step))
 
         timeout_seconds = _chat_turn_timeout_seconds()
         _warn_timeout_misconfiguration(timeout_seconds)
@@ -313,8 +312,6 @@ class AcademicCopilotApp:
         )
 
         if websocket_send:
-            for step in captured_steps:
-                await websocket_send(self._build_step_event(step))
             await websocket_send(
                 {
                     "type": "completion",

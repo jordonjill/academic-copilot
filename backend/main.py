@@ -27,6 +27,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 BACKEND_DIR = Path(__file__).resolve().parent
 FRONTEND_DIR = BACKEND_DIR.parent / "frontend"
+FRONTEND_DIST_DIR = FRONTEND_DIR / "dist"
 _DEFAULT_EXECUTOR: ThreadPoolExecutor | None = None
 
 
@@ -164,13 +165,20 @@ app.include_router(chat.router)
 app.include_router(health.router)
 app.include_router(admin.router)
 
-if FRONTEND_DIR.exists():
+if FRONTEND_DIST_DIR.exists():
+    assets_dir = FRONTEND_DIST_DIR / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+elif FRONTEND_DIR.exists():
+    # Legacy static frontend fallback.
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    index_file = FRONTEND_DIR / "index.html"
+    index_file = FRONTEND_DIST_DIR / "index.html"
+    if not index_file.exists():
+        index_file = FRONTEND_DIR / "index.html"
     if not index_file.exists():
         raise HTTPException(status_code=404, detail="Frontend not found.")
     return HTMLResponse(index_file.read_text(encoding="utf-8"))

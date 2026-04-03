@@ -1,44 +1,63 @@
 # Academic Copilot (Monorepo)
 
-This repository is split into frontend and backend:
+Academic Copilot is split into:
 
-- `frontend/`: web UI assets
-- `backend/`: FastAPI service with lightweight DDD-style layering
+- `backend/`: FastAPI service (supervisor/subagent/workflow runtime, tools, memory)
+- `frontend/`: React + TypeScript + Vite workspace UI
 
 ## Top-level Structure
 
 ```text
 .
 ├── frontend/
-│   ├── index.html
-│   ├── styles.css
-│   └── script.js
+│   ├── src/
+│   ├── package.json
+│   ├── tsconfig.json
+│   └── vite.config.ts
 ├── backend/
 │   ├── main.py
 │   ├── pyproject.toml
-│   ├── .env.example
+│   ├── config/
 │   ├── src/
-│   │   ├── domain/
-│   │   ├── application/
-│   │   ├── infrastructure/
-│   │   └── interfaces/
+│   ├── tests/
+│   ├── scripts/
 │   └── data/
-└── image/
+└── README.md
 ```
 
 ## Quick Start
 
+### 1) Run backend API
+
 ```bash
 cd backend
 uv sync
-uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+uv run uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-Then open `http://127.0.0.1:8000`.
+### 2) Run frontend (dev mode, optional)
 
-For backend details, see [backend/README.md](backend/README.md).
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-Key backend additions in MVP-1:
-- config-driven agent/workflow specs under `backend/config/`
-- `POST /admin/reload` for tools + runtime reload (`/admin/reload-runtime`, `/admin/reload-tools` also available)
-- `POST /chat` supports optional `workflow_id`
+Open `http://127.0.0.1:5173`.
+
+### 3) Serve built frontend from backend (optional)
+
+```bash
+cd frontend
+npm run build
+cd ../backend
+uv run uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+Open `http://127.0.0.1:8000`.
+
+For details:
+
+- backend: [backend/README.md](backend/README.md)
+- frontend: [frontend/README.md](frontend/README.md)
+- troubleshooting: see `Troubleshooting` sections in backend/frontend README

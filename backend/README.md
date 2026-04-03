@@ -60,19 +60,26 @@ From repository root:
 ```bash
 cd backend
 uv sync
-uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+uv run uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-The backend serves frontend static files from `../frontend`:
+Static frontend serving behavior:
 
-- `/` -> `frontend/index.html`
-- `/static/*` -> files under `frontend/`
+- If `../frontend/dist` exists:
+  - `/` -> `frontend/dist/index.html`
+  - `/assets/*` -> `frontend/dist/assets/*`
+- Otherwise (legacy fallback):
+  - `/` -> `frontend/index.html`
+  - `/static/*` -> files under `frontend/`
 
 ## API Endpoints
 
 - `POST /chat` (Bearer auth via `ACCESS_KEY`)
   - request: `message`, optional `workflow_id`, optional `session_id`, optional `user_id`
   - in-memory sliding-window rate limit can be enabled via `CHAT_RATE_LIMIT_*`
+- `POST /chat/stream` (Bearer auth via `ACCESS_KEY`)
+  - SSE stream endpoint for realtime status/step/final events
+  - emits `connected`, `status`, `step`, `completion`, `error` (+ heartbeat comments)
 - `GET /health` (Bearer auth via `ACCESS_KEY`)
 - `POST /admin/reload` (Bearer auth via `ADMIN_ACCESS_KEY`)
   - reload tools + runtime config
@@ -112,7 +119,7 @@ At startup, validation issues stop the app from booting.
 
 ## Timeout & Concurrency Tuning
 
-- `CHAT_TURN_TIMEOUT_SECONDS` is the API-layer timeout (`asyncio.wait_for`) for one `/chat` request.
+- `CHAT_TURN_TIMEOUT_SECONDS` is the API-layer timeout (`asyncio.wait_for`) for one `/chat` or `/chat/stream` turn.
 - `SUPERVISOR_MAX_WALL_TIME_SECONDS` limits supervisor loop wall-clock time.
 - `WORKFLOW_MAX_WALL_TIME_SECONDS` limits workflow loop wall-clock time.
 - `LLM_REQUEST_TIMEOUT_SECONDS` limits each single model call (passed into LLM client).
@@ -127,14 +134,92 @@ Recommended relation:
 Operational note:
 
 - Runtime now prefers async `ainvoke` path for supervisor/workflow agent execution, reducing dependence on threadpool workers for LLM calls.
+- Tool budgets are enforced by runtime wrappers; when a budget is exhausted, tool calls return a budget-exceeded payload to the agent instead of executing the external call.
 
 ## Memory Pipeline
 
 Memory is on the main chat path:
 
-- Before each turn: load latest `working_context` from SQLite into runtime messages
-- After each turn: persist raw/backbone/context snapshots and apply STM compression if threshold exceeded
-- Compression and history tables:
-  - `raw_messages`
-  - `working_context`
-  - `compression_events`
+- STM (short-term):
+  - Before each turn: load latest `working_context` snapshot from SQLite into runtime messages
+  - After each turn: persist raw/backbone/context snapshots and apply compression when threshold is exceeded
+  - SQLite tables: `raw_messages`, `working_context`, `compression_events`
+- LTM (long-term):
+  - Triggered after STM compression events
+  - Extracted facts are merged and written to `data/users/<user_id>/memory.md`
+  - A compact memory summary is injected into supervisor context in later turns
+
+## Troubleshooting
+
+### 1) `504 Gateway Timeout` on workflow calls
+
+Common cause: total workflow latency (LLM + tool calls + loops) exceeds `CHAT_TURN_TIMEOUT_SECONDS`.
+
+Check and tune:
+
+- Increase `CHAT_TURN_TIMEOUT_SECONDS` (API turn timeout).
+- Keep `LLM_REQUEST_TIMEOUT_SECONDS` lower than `CHAT_TURN_TIMEOUT_SECONDS`.
+- Reduce workflow complexity (`max_steps`, loop count, expensive nodes).
+- Reduce tool budgets if a node tends to over-call tools.
+
+Quick check:
+
+```bash
+curl -s http://127.0.0.1:8000/health -H "Authorization: Bearer $ACCESS_KEY"
+```
+
+### 2) `curl code=000` or `Operation timed out`
+
+This means no HTTP response was received in time (server not reachable or request timed out on client side).
+
+Check:
+
+- Backend is running on the same `BASE_URL`/port used by script.
+- `ACCESS_KEY` matches backend env.
+- `CURL_MAX_TIME_SECONDS` in `scripts/api_e2e.sh` is large enough for workflow tests.
+
+Example:
+
+```bash
+cd backend
+ACCESS_KEY=123 CURL_MAX_TIME_SECONDS=600 ./scripts/api_e2e.sh
+```
+
+### 3) arXiv `429` / `503` / `source_timeout`
+
+This is upstream instability/rate-limit from arXiv and is expected in bursts.
+
+Current behavior:
+
+- Tool logs warnings such as:
+  - `scholar_search.arxiv_rate_limited`
+  - `scholar_search.source_timeout`
+- Runtime degrades to web search results when available (`include_web=True` and Tavily configured).
+
+If this happens frequently:
+
+- Ensure `TAVILY_API_KEY` is set and valid.
+- Keep `include_web` enabled for `scholar_search`.
+- Avoid overly broad/high-fanout search prompts in one node.
+
+### 4) repeated `tool.budget_exceeded` warnings
+
+Example log:
+
+- `tool.budget_exceeded tool_id=paper_fetch used=6 limit=6`
+
+Meaning:
+
+- The agent attempted tool calls after budget was exhausted.
+- External tool execution is blocked by wrapper at that point.
+- Warnings can repeat because model may retry in the same ReAct loop before finishing.
+
+This is not extra external API cost after the limit; it is model retry behavior.
+
+### 5) No web-search results, only arXiv logs
+
+Check:
+
+- `TAVILY_API_KEY` is present in backend runtime env.
+- Tool config keeps web search enabled for `scholar_search`.
+- Look for startup/runtime logs indicating web search branch is active (for example `include_web=True`).

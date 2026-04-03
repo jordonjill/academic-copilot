@@ -9,6 +9,8 @@ set -euo pipefail
 #   USER_ID=u_demo
 #   ALLOW_WORKFLOW_TIMEOUT=1   # default: 1 (treat 504 in workflow as warning)
 #   LONG_SESSION_TURNS=10      # default: 10
+#   USE_STREAM=1               # default: 1 (use /chat/stream first; set 0 to fallback /chat)
+#   STREAM_VERBOSE=1           # default: 1 (print SSE events summary during stream parse; set 0 to mute)
 
 BASE_URL="${BASE_URL:-http://127.0.0.1:8000}"
 ACCESS_KEY="${ACCESS_KEY:-}"
@@ -16,6 +18,8 @@ USER_ID="${USER_ID:-u_demo}"
 ALLOW_WORKFLOW_TIMEOUT="${ALLOW_WORKFLOW_TIMEOUT:-1}"
 VERBOSE="${VERBOSE:-0}"
 LONG_SESSION_TURNS="${LONG_SESSION_TURNS:-10}"
+USE_STREAM="${USE_STREAM:-1}"
+STREAM_VERBOSE="${STREAM_VERBOSE:-1}"
 CURL_CONNECT_TIMEOUT_SECONDS="${CURL_CONNECT_TIMEOUT_SECONDS:-3}"
 CURL_MAX_TIME_SECONDS="${CURL_MAX_TIME_SECONDS:-600}"
 CURL_HEALTH_MAX_TIME_SECONDS="${CURL_HEALTH_MAX_TIME_SECONDS:-10}"
@@ -73,6 +77,8 @@ _print_banner() {
   echo "RUN_TAG : ${RUN_TAG}"
   echo "JSON parser: ${JSON_PARSER}"
   echo "Bypass proxy: $([[ ${#CURL_NO_PROXY_ARGS[@]} -gt 0 ]] && echo enabled || echo disabled)"
+  echo "Chat transport: $([[ "${USE_STREAM}" == "1" ]] && echo /chat/stream || echo /chat)"
+  echo "Stream verbose: $([[ "${STREAM_VERBOSE}" == "1" ]] && echo enabled || echo disabled)"
   echo "Curl timeout: connect=${CURL_CONNECT_TIMEOUT_SECONDS}s total=${CURL_MAX_TIME_SECONDS}s"
   echo "========================================"
 }
@@ -110,6 +116,139 @@ _call_json() {
   printf '%s\n%s\n' "${http_code}" "${body}"
 }
 
+_call_stream_json() {
+  # args: endpoint payload_json
+  local endpoint="$1"
+  local payload="$2"
+  local tmp_body
+  tmp_body="$(mktemp)"
+  local http_code curl_ec
+  set +e
+  http_code="$(
+    curl -sS -N -o "${tmp_body}" -w "%{http_code}" \
+      "${CURL_NO_PROXY_ARGS[@]}" \
+      --connect-timeout "${CURL_CONNECT_TIMEOUT_SECONDS}" \
+      --max-time "${CURL_MAX_TIME_SECONDS}" \
+      -X POST "${BASE_URL}${endpoint}" \
+      -H "${AUTH_HEADER}" \
+      -H "${CT_HEADER}" \
+      -d "${payload}"
+  )"
+  curl_ec=$?
+  set -e
+  if [[ ${curl_ec} -ne 0 ]]; then
+    local err_msg
+    err_msg="curl_failed(endpoint=${endpoint}, exit_code=${curl_ec}); check backend is running on ${BASE_URL}"
+    printf '000\n{"success":false,"message":"%s"}\n' "${err_msg}"
+    rm -f "${tmp_body}"
+    return 0
+  fi
+  local body
+  body="$(cat "${tmp_body}")"
+  rm -f "${tmp_body}"
+
+  # If stream endpoint itself failed before SSE starts, return raw body.
+  if [[ "${http_code}" != "200" ]]; then
+    printf '%s\n%s\n' "${http_code}" "${body}"
+    return 0
+  fi
+
+  local parsed
+  parsed="$("${PYTHON_BIN}" - "${body}" "${STREAM_VERBOSE}" <<'PY'
+import json
+import sys
+
+text = (sys.argv[1] if len(sys.argv) > 1 else "").replace("\r\n", "\n")
+verbose = str(sys.argv[2] if len(sys.argv) > 2 else "0").strip() == "1"
+blocks = text.split("\n\n")
+completion = None
+
+def vlog(message: str) -> None:
+    if verbose:
+        print(message, file=sys.stderr)
+
+def parse_block(block: str):
+    event = "message"
+    data_parts = []
+    for line in block.split("\n"):
+        if not line or line.startswith(":"):
+            continue
+        if line.startswith("event:"):
+            event = line[6:].strip() or "message"
+            continue
+        if line.startswith("data:"):
+            data_parts.append(line[5:].lstrip())
+    if not data_parts:
+        return None, None
+    raw = "\n".join(data_parts)
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return event, None
+    return event, payload
+
+for block in blocks:
+    event, payload = parse_block(block)
+    if payload is None:
+        continue
+    event_type = event
+    if isinstance(payload, dict) and payload.get("type"):
+        event_type = str(payload.get("type"))
+
+    if event_type == "connected" and isinstance(payload, dict):
+        vlog(f"[STREAM] connected session={payload.get('session_id', '')}")
+    elif event_type == "status" and isinstance(payload, dict):
+        msg = str(payload.get("message", "")).strip().replace("\n", " ")
+        vlog(f"[STREAM] status {msg[:140]}")
+    elif event_type == "step" and isinstance(payload, dict):
+        step_number = payload.get("step_number", "?")
+        node_name = payload.get("node_name", "")
+        next_node = payload.get("next_node", "")
+        vlog(f"[STREAM] step={step_number} node={node_name} next={next_node}")
+
+    if event_type == "error":
+        status = 500
+        if isinstance(payload, dict):
+            try:
+                status = int(payload.get("status_code") or 500)
+            except Exception:
+                status = 500
+            payload.setdefault("success", False)
+            out = payload
+        else:
+            out = {"success": False, "message": str(payload)}
+        vlog(f"[STREAM] error status={status} message={out.get('message', '')}")
+        print(status)
+        print(json.dumps(out, ensure_ascii=False))
+        sys.exit(0)
+
+    if event_type == "completion" and isinstance(payload, dict):
+        final_result = payload.get("final_result")
+        if isinstance(final_result, dict):
+            if "session_id" not in final_result and "session_id" in payload:
+                final_result["session_id"] = payload.get("session_id")
+            if "timestamp" not in final_result and "timestamp" in payload:
+                final_result["timestamp"] = payload.get("timestamp")
+            completion = final_result
+            vlog(
+                f"[STREAM] completion success={final_result.get('success', '')} "
+                f"type={final_result.get('type', '')}"
+            )
+
+if isinstance(completion, dict):
+    print(200)
+    print(json.dumps(completion, ensure_ascii=False))
+else:
+    print(502)
+    print(json.dumps({"success": False, "message": "stream_finished_without_completion"}, ensure_ascii=False))
+PY
+)"
+  local parsed_code parsed_body
+  parsed_code="$(printf '%s' "${parsed}" | sed -n '1p')"
+  parsed_body="$(printf '%s' "${parsed}" | sed -n '2,$p')"
+  printf '%s\n%s\n' "${parsed_code}" "${parsed_body}"
+}
+
 _json_get() {
   # args: json_text expr
   local json_text="$1"
@@ -135,12 +274,12 @@ _json_get() {
     fi
   fi
 
-  "${PYTHON_BIN}" - "$expr" <<'PY' <<<"$json_text"
+  "${PYTHON_BIN}" - "$expr" "$json_text" <<'PY'
 import json
 import sys
 
 expr = sys.argv[1]
-raw = sys.stdin.read()
+raw = sys.argv[2] if len(sys.argv) > 2 else ""
 try:
     data = json.loads(raw)
 except Exception:
@@ -227,7 +366,11 @@ JSON
   fi
 
   local resp
-  resp="$(_call_json "/chat" "${payload}")"
+  if [[ "${USE_STREAM}" == "1" ]]; then
+    resp="$(_call_stream_json "/chat/stream" "${payload}")"
+  else
+    resp="$(_call_json "/chat" "${payload}")"
+  fi
   local code body
   code="$(printf '%s' "${resp}" | sed -n '1p')"
   body="$(printf '%s' "${resp}" | sed -n '2,$p')"
@@ -237,6 +380,12 @@ JSON
   msg="$(_json_get "${body}" "message")"
   step_count="$(_json_get "${body}" "data.runtime.step_count")"
   loop_count="$(_json_get "${body}" "data.runtime.loop_count")"
+  if [[ -z "${step_count}" ]]; then
+    step_count="$(_json_get "${body}" "runtime.step_count")"
+  fi
+  if [[ -z "${loop_count}" ]]; then
+    loop_count="$(_json_get "${body}" "runtime.loop_count")"
+  fi
   local success_lc
   success_lc="$(printf '%s' "${success}" | tr '[:upper:]' '[:lower:]')"
 
