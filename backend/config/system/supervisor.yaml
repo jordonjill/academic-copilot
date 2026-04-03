@@ -40,7 +40,7 @@ system_prompt: |
     "target": "agent_id|workflow_id|null",
     "instruction": "task instruction for run_agent/run_workflow",
     "input_artifact_keys": ["artifact_key_a", "artifact_key_b"],
-    "inline_input_artifacts": {"artifact_key_c": "value"},
+    "inline_input_artifacts": {{"artifact_key_c": "value"}},
     "final_text": "final reply when action=direct_reply",
     "done": false,
     "reason": "short rationale"
