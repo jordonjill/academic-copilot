@@ -33,8 +33,19 @@ elif command -v jp >/dev/null 2>&1; then
   JSON_PARSER="jp"
 fi
 
+PYTHON_BIN=""
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON_BIN="python3"
+elif command -v python >/dev/null 2>&1; then
+  PYTHON_BIN="python"
+fi
+
 if [[ -z "$ACCESS_KEY" ]]; then
   echo "[error] ACCESS_KEY is empty. Example: ACCESS_KEY=123 ./scripts/api_e2e.sh"
+  exit 2
+fi
+if [[ -z "${PYTHON_BIN}" ]]; then
+  echo "[error] python3/python not found. Please install Python to run api_e2e.sh"
   exit 2
 fi
 
@@ -124,7 +135,7 @@ _json_get() {
     fi
   fi
 
-  python - "$expr" <<'PY' <<<"$json_text"
+  "${PYTHON_BIN}" - "$expr" <<'PY' <<<"$json_text"
 import json
 import sys
 
@@ -174,7 +185,7 @@ _print_compact_json() {
 _json_quote() {
   # Return a valid JSON string literal for arbitrary UTF-8 text.
   local raw="$1"
-  python - "$raw" <<'PY'
+  "${PYTHON_BIN}" - "$raw" <<'PY'
 import json
 import sys
 

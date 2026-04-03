@@ -56,20 +56,7 @@ class WorkflowExecutor:
         while True:
             if perf_counter() - started > max_wall_seconds:
                 raise TimeoutError(f"Workflow timeout after {max_wall_seconds:.1f} seconds")
-            runtime.enforce_limits(
-                {
-                    "_step_count": state["runtime"]["step_count"],
-                    "_loop_count": state["runtime"]["loop_count"],
-                }
-            )
             state["runtime"]["current_node"] = current_node
-            self._logger.info(
-                "workflow.step workflow_id=%s current_node=%s step_count=%s loop_count=%s",
-                workflow_id,
-                current_node,
-                state["runtime"].get("step_count", 0),
-                state["runtime"].get("loop_count", 0),
-            )
 
             node_spec = spec.nodes.get(current_node)
             if not node_spec:
@@ -81,6 +68,20 @@ class WorkflowExecutor:
                 if fallback:
                     state["output"]["final_text"] = fallback
                 break
+
+            runtime.enforce_limits(
+                {
+                    "_step_count": state["runtime"]["step_count"],
+                    "_loop_count": state["runtime"]["loop_count"],
+                }
+            )
+            self._logger.info(
+                "workflow.step workflow_id=%s current_node=%s step_count=%s loop_count=%s",
+                workflow_id,
+                current_node,
+                state["runtime"].get("step_count", 0),
+                state["runtime"].get("loop_count", 0),
+            )
 
             if node_type != "agent":
                 raise RuntimeError(f"Unsupported node type: {node_type}")
@@ -164,20 +165,7 @@ class WorkflowExecutor:
         while True:
             if perf_counter() - started > max_wall_seconds:
                 raise TimeoutError(f"Workflow timeout after {max_wall_seconds:.1f} seconds")
-            runtime.enforce_limits(
-                {
-                    "_step_count": state["runtime"]["step_count"],
-                    "_loop_count": state["runtime"]["loop_count"],
-                }
-            )
             state["runtime"]["current_node"] = current_node
-            self._logger.info(
-                "workflow.step workflow_id=%s current_node=%s step_count=%s loop_count=%s",
-                workflow_id,
-                current_node,
-                state["runtime"].get("step_count", 0),
-                state["runtime"].get("loop_count", 0),
-            )
 
             node_spec = spec.nodes.get(current_node)
             if not node_spec:
@@ -189,6 +177,20 @@ class WorkflowExecutor:
                 if fallback:
                     state["output"]["final_text"] = fallback
                 break
+
+            runtime.enforce_limits(
+                {
+                    "_step_count": state["runtime"]["step_count"],
+                    "_loop_count": state["runtime"]["loop_count"],
+                }
+            )
+            self._logger.info(
+                "workflow.step workflow_id=%s current_node=%s step_count=%s loop_count=%s",
+                workflow_id,
+                current_node,
+                state["runtime"].get("step_count", 0),
+                state["runtime"].get("loop_count", 0),
+            )
 
             if node_type != "agent":
                 raise RuntimeError(f"Unsupported node type: {node_type}")
