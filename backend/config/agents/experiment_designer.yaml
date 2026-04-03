@@ -1,5 +1,11 @@
 id: experiment_designer
-name: Experiment Designer
+description: >
+  Designs rigorous evaluation plans around the selected methods and hypotheses.
+  It specifies datasets, baselines, metrics, ablations, and statistical checks.
+input_requirements:
+  - artifacts.method_options
+  - artifacts.hypothesis_set
+  - artifacts.evidence_bank
 mode: chain
 system_prompt: |
   You are an experiment and evaluation design agent.

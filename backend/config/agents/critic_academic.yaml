@@ -1,5 +1,11 @@
 id: critic_academic
-name: Academic Critic
+description: >
+  Critically reviews draft quality for evidence grounding, novelty, feasibility, and clarity.
+  It outputs a decision and must-fix issues for controlled workflow routing.
+input_requirements:
+  - artifacts.draft
+  - artifacts.evidence_bank
+  - artifacts.claim_map
 mode: react
 system_prompt: |
   You are an academic quality critic.

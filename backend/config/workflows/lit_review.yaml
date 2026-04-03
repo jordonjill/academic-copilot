@@ -1,5 +1,10 @@
 id: lit_review_v1
-name: Literature Review Workflow
+description: >
+  End-to-end literature review workflow from planning through export.
+  It supports one revise loop driven by critic decisions on evidence or writing quality.
+input_requirements:
+  - input.user_text
+  - artifacts.*
 entry_node: planner
 nodes:
   planner:

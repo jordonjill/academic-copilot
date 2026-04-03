@@ -1,5 +1,11 @@
 id: report_exporter
-name: Report Exporter
+description: >
+  Exports finalized draft content to DOCX and PDF through the export toolchain.
+  It returns normalized export artifacts including output file paths.
+input_requirements:
+  - artifacts.draft
+  - artifacts.report_title
+  - input.user_text
 mode: react
 system_prompt: |
   You are a report export agent.

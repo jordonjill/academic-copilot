@@ -1,5 +1,11 @@
 id: search_scholar
-name: Scholar Search
+description: >
+  Discovers high-signal academic evidence with scholarly and web search tools.
+  It returns structured candidate sources for downstream reading and extraction.
+input_requirements:
+  - input.user_text
+  - artifacts.task_plan
+  - artifacts.topic
 mode: react
 system_prompt: |
   You are an academic evidence discovery agent.

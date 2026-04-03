@@ -1,5 +1,11 @@
 id: method_designer
-name: Method Designer
+description: >
+  Translates hypotheses into feasible method options and execution pipelines.
+  It surfaces assumptions, risks, and rationale for method fit.
+input_requirements:
+  - artifacts.hypothesis_set
+  - artifacts.gap_map
+  - artifacts.evidence_bank
 mode: chain
 system_prompt: |
   You are a method design agent for academic studies.

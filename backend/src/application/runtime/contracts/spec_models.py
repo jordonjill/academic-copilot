@@ -3,7 +3,7 @@ from __future__ import annotations
 import heapq
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _RESERVED_LIMIT_KEYS = {"max_steps", "max_loops"}
 _NODE_VISIT_PREFIX = "max_visits_"
@@ -38,14 +38,38 @@ class HooksConfig(BaseModel):
 
 class AgentSpec(BaseModel):
     id: str
-    name: str
+    description: str = Field(
+        validation_alias=AliasChoices("description", "name"),
+        serialization_alias="description",
+    )
+    input_requirements: List[str] = Field(default_factory=list)
     mode: Literal["chain", "react"]
     system_prompt: str
     tools: List[str] = Field(default_factory=list)
     llm: LLMConfig
     hooks: Optional[HooksConfig] = None
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    @property
+    def name(self) -> str:
+        # Backward-compatible alias for legacy call sites/tests.
+        return self.description
+
+    @field_validator("input_requirements", mode="before")
+    @classmethod
+    def _normalize_input_requirements(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            return []
+        result: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                text = item.strip()
+                if text:
+                    result.append(text)
+        return result
 
     @model_validator(mode="after")
     def _validate_tools_for_mode(self) -> "AgentSpec":
@@ -59,13 +83,37 @@ class AgentSpec(BaseModel):
 
 class WorkflowSpec(BaseModel):
     id: str
-    name: str
+    description: str = Field(
+        validation_alias=AliasChoices("description", "name"),
+        serialization_alias="description",
+    )
+    input_requirements: List[str] = Field(default_factory=list)
     entry_node: str
     nodes: Dict[str, dict]
     edges: List[dict]
     limits: Dict[str, int] = Field(default_factory=dict)
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    @property
+    def name(self) -> str:
+        # Backward-compatible alias for legacy call sites/tests.
+        return self.description
+
+    @field_validator("input_requirements", mode="before")
+    @classmethod
+    def _normalize_workflow_input_requirements(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            return []
+        result: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                text = item.strip()
+                if text:
+                    result.append(text)
+        return result
 
     @model_validator(mode="after")
     def _validate_graph(self) -> "WorkflowSpec":

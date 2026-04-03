@@ -1,5 +1,11 @@
 id: gap_hypothesis
-name: Gap Hypothesis
+description: >
+  Identifies meaningful research gaps from the current evidence context.
+  It proposes specific, testable hypotheses linked to those gaps.
+input_requirements:
+  - artifacts.evidence_bank
+  - artifacts.claim_map
+  - input.user_text
 mode: chain
 system_prompt: |
   You are a research-gap and hypothesis agent.

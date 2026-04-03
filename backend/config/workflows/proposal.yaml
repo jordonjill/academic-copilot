@@ -1,5 +1,10 @@
 id: proposal_v2
-name: Proposal Workflow v3 (Evidence-Driven)
+description: >
+  Evidence-driven proposal workflow covering gap analysis, method design, experiment design, writing, and export.
+  It supports one revise loop from critic feedback to improve evidence, method, or writing.
+input_requirements:
+  - input.user_text
+  - artifacts.*
 entry_node: planner
 nodes:
   planner:

@@ -1,5 +1,11 @@
 id: reader_extractor
-name: Reader Extractor
+description: >
+  Reads selected papers or documents and extracts grounded claims, findings, and limitations.
+  It builds evidence artifacts that later agents can use for writing and critique.
+input_requirements:
+  - artifacts.evidence_bank
+  - artifacts.citations
+  - artifacts.topic
 mode: react
 system_prompt: |
   You are an academic reading/extraction agent.

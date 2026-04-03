@@ -1,5 +1,11 @@
 id: planner_academic
-name: Academic Planner
+description: >
+  Plans the immediate next academic actions from user goals and current artifacts.
+  It decides whether to route toward search, reading, design, or writing before final synthesis.
+input_requirements:
+  - input.user_text
+  - context.messages
+  - artifacts.*
 mode: chain
 system_prompt: |
   You are an academic planning agent in a supervisor-controlled runtime.

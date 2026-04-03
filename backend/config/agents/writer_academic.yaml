@@ -1,5 +1,13 @@
 id: writer_academic
-name: Academic Writer
+description: >
+  Produces structured academic draft text from accumulated evidence and plans.
+  It emphasizes clarity, grounding, and concise section-level synthesis.
+input_requirements:
+  - input.user_text
+  - artifacts.evidence_bank
+  - artifacts.claim_map
+  - artifacts.method_options
+  - artifacts.experiment_plan
 mode: chain
 system_prompt: |
   You are an academic writing agent.
