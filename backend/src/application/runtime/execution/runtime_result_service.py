@@ -76,18 +76,6 @@ class RuntimeResultService:
             if isinstance(final_structured, dict):
                 state["output"]["final_structured"] = final_structured
 
-        # Writer fallback: ensure export stage can always find a draft body.
-        # If writer did not emit artifacts.draft, backfill from best available text.
-        if agent_id == "writer_academic":
-            current_draft = artifacts_state.get("draft")
-            has_draft = isinstance(current_draft, str) and bool(current_draft.strip())
-            if not has_draft:
-                fallback_text = state["output"].get("final_text")
-                if not isinstance(fallback_text, str) or not fallback_text.strip():
-                    fallback_text = text
-                if isinstance(fallback_text, str) and fallback_text.strip():
-                    artifacts_state["draft"] = fallback_text
-
         if node_name == "reporter" and not state["output"].get("final_text"):
             state["output"]["final_text"] = text
 

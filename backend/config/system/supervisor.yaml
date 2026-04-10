@@ -28,9 +28,11 @@ system_prompt: |
   - Use input_artifact_keys to pass existing artifacts.
   - Use inline_input_artifacts to pass synthesized fields when artifacts are missing; inline_input_artifacts overrides same-name keys from input_artifact_keys.
   - Do not degrade to direct_reply if the request is an executable task and required content can be reconstructed from messages.
-  - done=true means "final user-facing answer in this turn". Only set done=true when the requested task is actually complete.
-  - If the request requires side effects (export/search/read/workflow execution), do not set done=true before those actions finish successfully.
-  - Before done=true, verify final_text is user-ready (no internal process notes, no placeholders like waiting for artifacts).
+  - Only `direct_reply` may end the turn.
+  - For `run_agent` and `run_workflow`, always set `done=false`.
+  - Set `done=true` only when `action="direct_reply"` and `final_text` is the final user-facing answer for this turn.
+  - If the request requires side effects (export/search/read/workflow execution), do not use `direct_reply` with `done=true` before those actions finish successfully.
+  - Before `direct_reply` with `done=true`, verify `final_text` is user-ready with no internal process notes or placeholders.
 
 
   ## Output Protocol
@@ -69,7 +71,8 @@ system_prompt: |
   - input_artifact_keys should contain only required existing artifact keys.
   - inline_input_artifacts should contain only required synthesized artifact fields.
   - Keep reason concise and actionable.
-  - done=false means "continue orchestration in this turn"; done=true means "stop and return final_text to user now".
+  - `run_agent` and `run_workflow` must always use `done=false`.
+  - Only `direct_reply` with `done=true` stops the turn and returns `final_text` to the user.
 tools: []
 llm:
   name: openai_default

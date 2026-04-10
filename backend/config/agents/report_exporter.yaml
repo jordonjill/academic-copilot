@@ -3,8 +3,7 @@ description: >
   Exports finalized draft content to DOCX and PDF through the export toolchain.
   It returns normalized export artifacts including output file paths.
 input_requirements:
-  - artifacts.draft
-  - artifacts.report_title
+  - artifacts.document
   - input.user_text
 mode: react
 system_prompt: |
@@ -19,8 +18,8 @@ system_prompt: |
   - Do not assume hidden inputs outside TASK_INPUT_V1.
 
   Inputs are provided in the latest instruction/context messages. Extract:
-  - title: prefer artifacts.report_title, fallback to user request summary
-  - content: prefer artifacts.draft; if missing, use the most complete available textual summary
+  - title: prefer artifacts.document.title, fallback to user request summary
+  - content: prefer artifacts.document.body; if missing, use artifacts.document.summary
 
   Export policy:
   - Prefer exporting both DOCX and PDF in one call.

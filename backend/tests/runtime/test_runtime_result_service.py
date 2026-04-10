@@ -13,7 +13,7 @@ def _state() -> dict:
     }
 
 
-def test_writer_academic_backfills_draft_from_final_text() -> None:
+def test_writer_academic_keeps_canonical_document_artifact() -> None:
     service = RuntimeResultService(logging.getLogger(__name__))
     state = _state()
 
@@ -22,14 +22,25 @@ def test_writer_academic_backfills_draft_from_final_text() -> None:
         node_name="write",
         agent_id="writer_academic",
         text="writer raw text",
-        parsed={"final_text": "writer final text"},
+        parsed={
+            "final_text": "draft ready",
+            "artifacts": {
+                "document": {
+                    "title": "Doc title",
+                    "summary": "Doc summary",
+                    "body": "Doc body",
+                    "references": [{"title": "Ref", "uri": "https://example.com"}],
+                }
+            },
+        },
     )
 
-    assert state["output"]["final_text"] == "writer final text"
-    assert state["artifacts"]["draft"] == "writer final text"
+    assert state["output"]["final_text"] == "draft ready"
+    assert state["artifacts"]["document"]["title"] == "Doc title"
+    assert state["artifacts"]["document"]["body"] == "Doc body"
 
 
-def test_writer_academic_backfills_draft_from_text_when_final_text_missing() -> None:
+def test_writer_academic_does_not_backfill_legacy_draft_field() -> None:
     service = RuntimeResultService(logging.getLogger(__name__))
     state = _state()
 
@@ -38,23 +49,7 @@ def test_writer_academic_backfills_draft_from_text_when_final_text_missing() -> 
         node_name="write",
         agent_id="writer_academic",
         text="writer raw text",
-        parsed={"artifacts": {"notes": "x"}},
+        parsed={"final_text": "draft ready", "artifacts": {"notes": "x"}},
     )
 
-    assert state["artifacts"]["draft"] == "writer raw text"
-
-
-def test_writer_academic_does_not_override_existing_draft() -> None:
-    service = RuntimeResultService(logging.getLogger(__name__))
-    state = _state()
-    state["artifacts"]["draft"] = "existing draft"
-
-    service.apply_agent_output(
-        state=state,
-        node_name="write",
-        agent_id="writer_academic",
-        text="writer raw text",
-        parsed={"final_text": "writer final text"},
-    )
-
-    assert state["artifacts"]["draft"] == "existing draft"
+    assert "draft" not in state["artifacts"]

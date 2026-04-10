@@ -123,15 +123,6 @@ class SupervisorOrchestrator:
                             )
                         )
                     )
-                    if decision.get("done"):
-                        final_text = decision.get("final_text")
-                        if not isinstance(final_text, str) or not final_text.strip():
-                            final_text = decision.get("message")
-                        if isinstance(final_text, str) and final_text.strip():
-                            state["output"]["final_text"] = final_text
-                            state["io"]["last_model_output"] = final_text
-                            state["context"]["messages"].append(AIMessage(content=final_text))
-                            return
                     continue
                 workflow_id = resolve_workflow_target(decision, state)
                 if workflow_id and workflow_id in self._registry.workflows:
@@ -173,15 +164,6 @@ class SupervisorOrchestrator:
                                 )
                             )
                         )
-                        if decision.get("done"):
-                            final_text = decision.get("final_text")
-                            if not isinstance(final_text, str) or not final_text.strip():
-                                final_text = decision.get("message")
-                            if isinstance(final_text, str) and final_text.strip():
-                                state["output"]["final_text"] = final_text
-                                state["io"]["last_model_output"] = final_text
-                                state["context"]["messages"].append(AIMessage(content=final_text))
-                                return
                         continue
 
                     instruction = decision.get("instruction")
@@ -221,8 +203,6 @@ class SupervisorOrchestrator:
                                 "tool_outputs": list(state["io"].get("last_tool_outputs", [])),
                             }
                         )
-                    if decision.get("done") and state["output"].get("final_text"):
-                        return
                     continue
                 action = "direct_reply"
 
@@ -345,15 +325,6 @@ class SupervisorOrchestrator:
                             )
                         )
                     )
-                    if decision.get("done"):
-                        final_text = decision.get("final_text")
-                        if not isinstance(final_text, str) or not final_text.strip():
-                            final_text = decision.get("message")
-                        if isinstance(final_text, str) and final_text.strip():
-                            state["output"]["final_text"] = final_text
-                            state["io"]["last_model_output"] = final_text
-                            state["context"]["messages"].append(AIMessage(content=final_text))
-                            return
                     continue
                 workflow_id = resolve_workflow_target(decision, state)
                 if workflow_id and workflow_id in self._registry.workflows:
@@ -395,15 +366,6 @@ class SupervisorOrchestrator:
                                 )
                             )
                         )
-                        if decision.get("done"):
-                            final_text = decision.get("final_text")
-                            if not isinstance(final_text, str) or not final_text.strip():
-                                final_text = decision.get("message")
-                            if isinstance(final_text, str) and final_text.strip():
-                                state["output"]["final_text"] = final_text
-                                state["io"]["last_model_output"] = final_text
-                                state["context"]["messages"].append(AIMessage(content=final_text))
-                                return
                         continue
 
                     instruction = decision.get("instruction")
@@ -443,8 +405,6 @@ class SupervisorOrchestrator:
                             "tool_outputs": list(state["io"].get("last_tool_outputs", [])),
                         },
                     )
-                    if decision.get("done") and state["output"].get("final_text"):
-                        return
                     continue
                 action = "direct_reply"
 

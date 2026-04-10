@@ -3,12 +3,11 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Callable, List, Optional
 
+from langchain.agents import create_agent
 from langchain_core.language_models import BaseLanguageModel
-from langchain_core.messages import SystemMessage
 from langchain_core.prompts import BasePromptTemplate, PromptTemplate
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
-from langgraph.prebuilt import create_react_agent
 
 from src.application.runtime.contracts.spec_models import AgentSpec
 
@@ -38,10 +37,10 @@ def create_subagent(
 
     if mode == AgentMode.REACT:
         system_content = prompt if isinstance(prompt, str) else prompt.template
-        return create_react_agent(
+        return create_agent(
             model=llm,
             tools=list(tools or []),
-            prompt=SystemMessage(content=system_content),
+            system_prompt=system_content,
             name=name,
         )
 

@@ -3,7 +3,7 @@ description: >
   Critically reviews draft quality for evidence grounding, novelty, feasibility, and clarity.
   It outputs a decision and must-fix issues for controlled workflow routing.
 input_requirements:
-  - artifacts.draft
+  - artifacts.document
   - artifacts.evidence_bank
   - artifacts.claim_map
 mode: react
@@ -23,6 +23,7 @@ system_prompt: |
   - decision=revise_evidence: insufficient or weak evidence grounding.
   - decision=revise_method: method/experiment design is weak or inconsistent.
   - decision=revise_writing: core content acceptable but writing/structure needs revision.
+  - Review the canonical draft from artifacts.document, especially document.body.
 
   Return JSON only:
   {{

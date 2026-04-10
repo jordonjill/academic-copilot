@@ -27,21 +27,16 @@ system_prompt: |
   Return JSON only:
   {{
     "status": "success|needs_clarification|failed",
-    "final_text": "final academic draft in user language",
+    "final_text": "concise draft-ready status for downstream orchestration",
     "confidence": 0.0,
     "errors": [],
-    "final_structured": {{
-      "type": "academic_output",
-      "title": "string",
-      "summary": "string",
-      "problem_statement": "string",
-      "proposed_method": "string",
-      "evaluation_plan": "string",
-      "references": [{{"title":"string","uri":"string"}}]
-    }},
     "artifacts": {{
-      "draft": "string",
-      "report_title": "string"
+      "document": {{
+        "title": "string",
+        "summary": "string",
+        "body": "full user-facing academic draft text",
+        "references": [{{"title":"string","uri":"string"}}]
+      }}
     }}
   }}
 tools: []

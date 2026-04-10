@@ -77,8 +77,8 @@ def _is_streamable_direct_reply(raw_text: str) -> Optional[bool]:
 
     Rules:
     - `action != direct_reply` -> False (never stream internal routing decisions)
-    - `action == direct_reply` and `done == false` -> False
-    - `action == direct_reply` and `done` missing/true -> True
+    - `action == direct_reply` and `done != true` -> False
+    - `action == direct_reply` and `done == true` -> True
     """
     action_match = _ACTION_FIELD_PATTERN.search(raw_text)
     if action_match is None:
@@ -88,8 +88,8 @@ def _is_streamable_direct_reply(raw_text: str) -> Optional[bool]:
         return False
     done_match = _DONE_FIELD_PATTERN.search(raw_text)
     if done_match is None:
-        return True
-    return done_match.group(1).strip().lower() != "false"
+        return False
+    return done_match.group(1).strip().lower() == "true"
 
 
 class SupervisorDecisionService:
@@ -254,7 +254,7 @@ class SupervisorDecisionService:
             if isinstance(parsed, dict)
             else {"action": "direct_reply", "final_text": text}
         )
-        if decision.get("action") != "direct_reply":
+        if decision.get("action") != "direct_reply" or not bool(decision.get("done")):
             return
         final_text = decision.get("final_text")
         if isinstance(final_text, str) and final_text.strip():
@@ -291,7 +291,7 @@ class SupervisorDecisionService:
             if isinstance(parsed, dict)
             else {"action": "direct_reply", "final_text": text}
         )
-        if decision.get("action") != "direct_reply":
+        if decision.get("action") != "direct_reply" or not bool(decision.get("done")):
             return
         final_text = decision.get("final_text")
         if isinstance(final_text, str) and final_text.strip():
@@ -350,6 +350,10 @@ class SupervisorDecisionService:
         if not isinstance(final_text, str):
             final_text = raw_text
 
+        done = bool(raw_payload.get("done", False))
+        if action != "direct_reply":
+            done = False
+
         cleaned_payload: Dict[str, Any] = {
             "action": action,
             "target": target if isinstance(target, str) and target.strip() else None,
@@ -364,7 +368,7 @@ class SupervisorDecisionService:
                     else {}
                 )
             ),
-            "done": bool(raw_payload.get("done", False)),
+            "done": done,
             "final_text": final_text,
             "reason": raw_payload.get("reason") if isinstance(raw_payload.get("reason"), str) else "",
         }

@@ -240,6 +240,52 @@ def test_runtime_engine_supervisor_runs_subagent_then_replies(monkeypatch, tmp_p
     )
 
 
+def test_runtime_engine_supervisor_run_agent_done_true_requires_followup_direct_reply(monkeypatch, tmp_path):
+    engine = RuntimeEngine(registry=_registry(tmp_path))
+    monkeypatch.setattr(engine, "_resolve_llm", lambda spec: object())
+
+    supervisor_calls = {"count": 0}
+    researcher_calls = {"count": 0}
+
+    def _supervisor_reply(payload):
+        del payload
+        supervisor_calls["count"] += 1
+        if supervisor_calls["count"] == 1:
+            return json.dumps(
+                {
+                    "action": "run_agent",
+                    "target": "researcher",
+                    "instruction": "write the document",
+                    "done": True,
+                }
+            )
+        return json.dumps({"action": "direct_reply", "message": "supervisor final reply", "done": True})
+
+    def _fake_build(spec, llm, tool_resolver):
+        del llm, tool_resolver
+        if spec.id == "supervisor":
+            return _FakeRunnable(_supervisor_reply)
+        if spec.id == "researcher":
+            def _invoke(payload):
+                del payload
+                researcher_calls["count"] += 1
+                return json.dumps({"final_text": "subagent draft"})
+
+            return _FakeRunnable(_invoke)
+        raise AssertionError(f"Unexpected agent execution: {spec.id}")
+
+    monkeypatch.setattr("src.application.runtime.runtime_engine.build_agent_from_spec", _fake_build)
+
+    state = _state()
+    result = engine.run_turn(state)
+
+    assert result["success"] is True
+    assert result["message"] == "supervisor final reply"
+    assert supervisor_calls["count"] == 2
+    assert researcher_calls["count"] == 1
+    assert state["output"]["final_text"] == "supervisor final reply"
+
+
 def test_runtime_engine_supervisor_inline_input_artifacts_fill_empty_only(monkeypatch, tmp_path):
     engine = RuntimeEngine(registry=_registry(tmp_path))
     monkeypatch.setattr(engine, "_resolve_llm", lambda spec: object())
@@ -307,7 +353,7 @@ def test_runtime_engine_supervisor_starts_workflow(monkeypatch, tmp_path):
         supervisor_payloads.append(payload)
         supervisor_calls["count"] += 1
         if supervisor_calls["count"] == 1:
-            return json.dumps({"action": "start_workflow", "target": "wf1", "done": False})
+            return json.dumps({"action": "start_workflow", "target": "wf1", "done": True})
         return json.dumps({"action": "direct_reply", "message": "workflow finished", "done": True})
 
     def _fake_build(spec, llm, tool_resolver):
