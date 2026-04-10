@@ -4,9 +4,10 @@ type Props = {
   messages: ChatMessage[];
   pending: boolean;
   pendingText?: string;
+  streamingAssistantText?: string;
 };
 
-export function MessageList({ messages, pending, pendingText }: Props) {
+export function MessageList({ messages, pending, pendingText, streamingAssistantText }: Props) {
   return (
     <div className="message-list">
       {messages.length === 0 ? (
@@ -33,6 +34,16 @@ export function MessageList({ messages, pending, pendingText }: Props) {
           ) : null}
         </article>
       ))}
+      {pending && streamingAssistantText && streamingAssistantText.trim() ? (
+        <article className="message-bubble assistant">
+          <header>
+            <span className="role">Assistant</span>
+            <time>{new Date().toLocaleString()}</time>
+          </header>
+          <pre>{streamingAssistantText}</pre>
+          <div className="message-meta">streaming...</div>
+        </article>
+      ) : null}
       {pending ? <div className="pending-indicator">{pendingText || "Assistant is processing..."}</div> : null}
     </div>
   );

@@ -10,6 +10,7 @@ export type StreamCallbacks = {
   onConnected?: (event: ChatStreamEvent) => void;
   onStatus?: (event: ChatStreamEvent) => void;
   onStep?: (event: ChatStreamEvent) => void;
+  onDelta?: (event: ChatStreamEvent) => void;
   onError?: (event: ChatStreamEvent) => void;
   onEvent?: (eventName: string, event: ChatStreamEvent) => void;
   onCompletion?: (response: ChatResponseNormalized, event: ChatStreamEvent) => void;
@@ -169,6 +170,13 @@ export async function streamChat(
         }
         if (eventName === "step") {
           callbacks?.onStep?.(eventPayload);
+          continue;
+        }
+        if (eventName === "delta") {
+          callbacks?.onDelta?.(eventPayload);
+          // Yield once so React can paint incremental text even when multiple
+          // delta events arrive in one network chunk.
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
           continue;
         }
         if (eventName === "error") {

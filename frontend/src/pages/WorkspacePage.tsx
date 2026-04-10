@@ -14,6 +14,7 @@ import type { ChatArtifacts, ChatMessage, RuntimeInfo, WorkflowId } from "../typ
 type MessageBucket = Record<string, ChatMessage[]>;
 type RuntimeBucket = Record<string, RuntimeInfo | undefined>;
 type ArtifactBucket = Record<string, ChatArtifacts | undefined>;
+type StreamBucket = Record<string, string | undefined>;
 const MESSAGES_KEY = "acp_messages_v1";
 const RUNTIME_KEY = "acp_runtime_v1";
 const ARTIFACTS_KEY = "acp_artifacts_v1";
@@ -47,6 +48,7 @@ export function WorkspacePage() {
   const [messagesBySession, setMessagesBySession] = useState<MessageBucket>(() => loadJsonObject(MESSAGES_KEY, {}));
   const [runtimeBySession, setRuntimeBySession] = useState<RuntimeBucket>(() => loadJsonObject(RUNTIME_KEY, {}));
   const [artifactsBySession, setArtifactsBySession] = useState<ArtifactBucket>(() => loadJsonObject(ARTIFACTS_KEY, {}));
+  const [streamingTextBySession, setStreamingTextBySession] = useState<StreamBucket>({});
   const [pending, setPending] = useState(false);
   const [pendingText, setPendingText] = useState("");
   const [workflowMode, setWorkflowMode] = useState<WorkflowMode>("direct");
@@ -104,6 +106,7 @@ export function WorkspacePage() {
     setMessagesBySession((prev) => ({ ...prev, [sessionId]: [] }));
     setRuntimeBySession((prev) => ({ ...prev, [sessionId]: undefined }));
     setArtifactsBySession((prev) => ({ ...prev, [sessionId]: undefined }));
+    setStreamingTextBySession((prev) => ({ ...prev, [sessionId]: undefined }));
   }
 
   async function retryLastUserTurn() {
@@ -147,7 +150,9 @@ export function WorkspacePage() {
 
     setPending(true);
     setPendingText("Connecting stream...");
+    setStreamingTextBySession((prev) => ({ ...prev, [sid]: "" }));
     try {
+      let streamedText = "";
       const workflowId: WorkflowId | null = workflowMode === "direct" ? null : workflowMode;
       const response = await streamChat(
         {
@@ -188,6 +193,14 @@ export function WorkspacePage() {
               setPendingText(`Step ${stepNumber}: ${nodeName}${nextNode ? ` -> ${nextNode}` : ""}`);
             }
           },
+          onDelta: (event) => {
+            const delta = String(event.delta ?? "");
+            if (!delta) {
+              return;
+            }
+            streamedText += delta;
+            setStreamingTextBySession((prev) => ({ ...prev, [sid]: streamedText }));
+          },
         },
       );
 
@@ -203,7 +216,7 @@ export function WorkspacePage() {
       appendMessage(sid, {
         id: `${sid}_a_${Date.now()}`,
         role: "assistant",
-        text: response.message || "(empty response)",
+        text: response.message || streamedText || "(empty response)",
         timestamp: response.timestamp ?? new Date().toISOString(),
         runtime,
         artifacts,
@@ -224,6 +237,7 @@ export function WorkspacePage() {
     } finally {
       setPending(false);
       setPendingText("");
+      setStreamingTextBySession((prev) => ({ ...prev, [sid]: undefined }));
     }
   }
 
@@ -257,7 +271,12 @@ export function WorkspacePage() {
           </div>
         </header>
 
-        <MessageList messages={activeMessages} pending={pending} pendingText={pendingText} />
+        <MessageList
+          messages={activeMessages}
+          pending={pending}
+          pendingText={pendingText}
+          streamingAssistantText={streamingTextBySession[activeSessionId] ?? ""}
+        />
         <ChatInput disabled={pending} onSend={onSend} />
       </main>
 

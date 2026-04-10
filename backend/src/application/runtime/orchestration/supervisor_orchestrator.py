@@ -14,11 +14,17 @@ StepCallback = Callable[[dict[str, Any]], Any]
 SyncRunWorkflow = Callable[[RuntimeState, str, Optional[StepCallback]], None]
 AsyncRunWorkflow = Callable[[RuntimeState, str, Optional[StepCallback]], Awaitable[None]]
 SyncFinalize = Callable[[RuntimeState, Optional[str]], None]
-AsyncFinalize = Callable[[RuntimeState, Optional[str]], Awaitable[None]]
+AsyncFinalize = Callable[
+    [RuntimeState, Optional[str], Optional[Callable[[str], Awaitable[None]]]],
+    Awaitable[None],
+]
 SyncChitchat = Callable[[RuntimeState], None]
 AsyncChitchat = Callable[[RuntimeState], Awaitable[None]]
 SyncDecide = Callable[[RuntimeState, AgentSpec, Optional[str]], dict[str, Any]]
-AsyncDecide = Callable[[RuntimeState, AgentSpec, Optional[str]], Awaitable[dict[str, Any]]]
+AsyncDecide = Callable[
+    [RuntimeState, AgentSpec, Optional[str], Optional[Callable[[str], Awaitable[None]]]],
+    Awaitable[dict[str, Any]],
+]
 ResolveWorkflowTarget = Callable[[dict[str, Any], RuntimeState], Optional[str]]
 ResolveSubagentTarget = Callable[[dict[str, Any]], Optional[str]]
 AppendExecutionTrace = Callable[..., None]
@@ -28,6 +34,7 @@ SyncExecuteSubagentIsolated = Callable[..., None]
 AsyncExecuteSubagentIsolated = Callable[..., Awaitable[None]]
 EnsureTurnBudget = Callable[[RuntimeState], dict[str, Any]]
 AsyncEmitStepCallback = Callable[[Optional[StepCallback], dict[str, Any]], Awaitable[None]]
+AsyncEmitRuntimeEvent = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 class SupervisorOrchestrator:
@@ -261,12 +268,29 @@ class SupervisorOrchestrator:
         execute_subagent_isolated_async: AsyncExecuteSubagentIsolated,
         ensure_turn_tool_budget: EnsureTurnBudget,
         emit_step_callback_async: AsyncEmitStepCallback,
+        emit_runtime_event_async: AsyncEmitRuntimeEvent,
     ) -> None:
+        stream_event_index = 0
+
+        async def _emit_supervisor_delta(delta: str) -> None:
+            nonlocal stream_event_index
+            if not isinstance(delta, str) or not delta:
+                return
+            stream_event_index += 1
+            await emit_runtime_event_async(
+                {
+                    "type": "delta",
+                    "source": "supervisor",
+                    "delta": delta,
+                    "index": stream_event_index,
+                }
+            )
+
         if requested_workflow_id:
             if requested_workflow_id not in self._registry.workflows:
                 raise ValueError(f"Unknown workflow_id: {requested_workflow_id}")
             await run_workflow_async(state, requested_workflow_id, step_callback)
-            await finalize_with_supervisor_async(state, requested_workflow_id)
+            await finalize_with_supervisor_async(state, requested_workflow_id, _emit_supervisor_delta)
             return
 
         if supervisor_spec is None or supervisor_spec.mode != "chain":
@@ -289,7 +313,12 @@ class SupervisorOrchestrator:
         for _ in range(max_steps):
             if perf_counter() - started > max_wall_seconds:
                 raise TimeoutError(f"Supervisor loop timeout after {max_wall_seconds:.1f} seconds")
-            decision = await decide_next_action_async(state, supervisor_spec, requested_workflow_id)
+            decision = await decide_next_action_async(
+                state,
+                supervisor_spec,
+                requested_workflow_id,
+                _emit_supervisor_delta,
+            )
             action = decision.get("action")
             if not isinstance(action, str):
                 action = "direct_reply"

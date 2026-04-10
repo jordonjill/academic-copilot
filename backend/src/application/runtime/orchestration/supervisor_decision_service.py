@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from langchain_core.messages import AIMessage
@@ -12,6 +14,82 @@ _SUPERVISOR_ACTION_MAP = {
     "run_subagent": "run_agent",
     "start_workflow": "run_workflow",
 }
+_FINAL_TEXT_FIELD_PATTERN = re.compile(r'"final_text"\s*:\s*"')
+_ACTION_FIELD_PATTERN = re.compile(r'"action"\s*:\s*"([^"]*)"', flags=re.I)
+_DONE_FIELD_PATTERN = re.compile(r'"done"\s*:\s*(true|false)', flags=re.I)
+
+
+def _extract_partial_final_text(raw_text: str) -> str:
+    """Extract best-effort partial `final_text` from a streaming JSON buffer."""
+    match = _FINAL_TEXT_FIELD_PATTERN.search(raw_text)
+    if match is None:
+        return ""
+    i = match.end()
+    buf: list[str] = []
+    escaped = False
+    while i < len(raw_text):
+        ch = raw_text[i]
+        if escaped:
+            buf.append("\\")
+            buf.append(ch)
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\":
+            escaped = True
+            i += 1
+            continue
+        if ch == '"':
+            break
+        buf.append(ch)
+        i += 1
+
+    raw_value = "".join(buf)
+    if not raw_value:
+        return ""
+
+    # Drop truncated escape sequences so json.loads can decode partial chunks safely.
+    if raw_value.endswith("\\"):
+        raw_value = raw_value[:-1]
+    raw_value = re.sub(r"\\u[0-9a-fA-F]{0,3}$", "", raw_value)
+    if not raw_value:
+        return ""
+
+    try:
+        decoded = json.loads(f'"{raw_value}"')
+    except Exception:
+        return ""
+    return decoded if isinstance(decoded, str) else ""
+
+
+def _suffix_delta(full_text: str, emitted_text: str) -> str:
+    if not full_text:
+        return ""
+    if not emitted_text:
+        return full_text
+    if full_text.startswith(emitted_text):
+        return full_text[len(emitted_text) :]
+    return ""
+
+
+def _is_streamable_direct_reply(raw_text: str) -> Optional[bool]:
+    """Return stream gate for partial JSON.
+
+    Rules:
+    - `action != direct_reply` -> False (never stream internal routing decisions)
+    - `action == direct_reply` and `done == false` -> False
+    - `action == direct_reply` and `done` missing/true -> True
+    """
+    action_match = _ACTION_FIELD_PATTERN.search(raw_text)
+    if action_match is None:
+        return None
+    action = _SUPERVISOR_ACTION_MAP.get(action_match.group(1).strip().lower(), action_match.group(1).strip().lower())
+    if action != "direct_reply":
+        return False
+    done_match = _DONE_FIELD_PATTERN.search(raw_text)
+    if done_match is None:
+        return True
+    return done_match.group(1).strip().lower() != "false"
 
 
 class SupervisorDecisionService:
@@ -39,6 +117,51 @@ class SupervisorDecisionService:
         self._coerce_text = coerce_text
         self._try_parse_supervisor_decision_json = try_parse_supervisor_decision_json
         self._invoke_async = invoke_async
+
+    async def _invoke_supervisor_async(
+        self,
+        *,
+        runnable: Any,
+        payload: Dict[str, Any],
+        stream_text_delta: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> str:
+        if callable(stream_text_delta):
+            astream = getattr(runnable, "astream", None)
+            if callable(astream):
+                streamed_raw = ""
+                emitted_text = ""
+                try:
+                    async for chunk in astream(payload):
+                        piece = self._coerce_text(chunk)
+                        if not piece:
+                            continue
+                        streamed_raw += piece
+                        streamable = _is_streamable_direct_reply(streamed_raw)
+                        if streamable is not True:
+                            continue
+                        partial_final_text = _extract_partial_final_text(streamed_raw)
+                        delta = _suffix_delta(partial_final_text, emitted_text)
+                        if delta:
+                            emitted_text += delta
+                            await stream_text_delta(delta)
+                    # Flush any remaining suffix from final_text after stream closes.
+                    final_text = _extract_partial_final_text(streamed_raw)
+                    tail = _suffix_delta(final_text, emitted_text)
+                    if tail:
+                        await stream_text_delta(tail)
+                    return streamed_raw
+                except Exception as exc:
+                    self._logger.warning(
+                        "supervisor.astream_failed_fallback_to_invoke error=%s",
+                        str(exc),
+                    )
+
+        raw = await self._invoke_async(
+            runnable,
+            payload,
+            None,
+        )
+        return self._coerce_text(raw)
 
     def decide_next_action(
         self,
@@ -77,20 +200,20 @@ class SupervisorDecisionService:
         state: RuntimeState,
         supervisor_spec: AgentSpec,
         requested_workflow_id: Optional[str],
+        stream_text_delta: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> Dict[str, Any]:
         llm = self._resolve_llm(supervisor_spec)
         runnable = self._build_agent_from_spec(supervisor_spec, llm, self._resolve_tool)
-        raw = await self._invoke_async(
-            runnable,
-            self._build_supervisor_payload(
+        text = await self._invoke_supervisor_async(
+            runnable=runnable,
+            payload=self._build_supervisor_payload(
                 state,
                 supervisor_spec,
                 requested_workflow_id,
                 False,
             ),
-            None,
+            stream_text_delta=stream_text_delta,
         )
-        text = self._coerce_text(raw)
         if not text.strip():
             self._logger.warning(
                 "supervisor.empty_decision_output agent_id=%s step_count=%s workflow_id=%s",
@@ -144,6 +267,7 @@ class SupervisorDecisionService:
         *,
         state: RuntimeState,
         requested_workflow_id: Optional[str],
+        stream_text_delta: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> None:
         supervisor_spec = self._resolve_supervisor_spec()
         if supervisor_spec is None or supervisor_spec.mode != "chain":
@@ -151,17 +275,16 @@ class SupervisorDecisionService:
 
         llm = self._resolve_llm(supervisor_spec)
         runnable = self._build_agent_from_spec(supervisor_spec, llm, self._resolve_tool)
-        raw = await self._invoke_async(
-            runnable,
-            self._build_supervisor_payload(
+        text = await self._invoke_supervisor_async(
+            runnable=runnable,
+            payload=self._build_supervisor_payload(
                 state,
                 supervisor_spec,
                 requested_workflow_id,
                 True,
             ),
-            None,
+            stream_text_delta=stream_text_delta,
         )
-        text = self._coerce_text(raw)
         parsed = self._try_parse_supervisor_decision_json(text)
         decision = (
             self.normalize_supervisor_decision(parsed=parsed, raw_text=text, state=state)

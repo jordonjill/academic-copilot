@@ -38,6 +38,7 @@ CHITCHAT_SYSTEM = """You are Academic Copilot, an assistant for academic researc
 Respond concisely and in the same language as the user."""
 
 StepCallback = Callable[[Dict[str, Any]], Any]
+EventCallback = Callable[[Dict[str, Any]], Any]
 _SUPERVISOR_AGENT_ENV = "SUPERVISOR_AGENT_ID"
 _DEFAULT_SUPERVISOR_AGENT_ID = "supervisor"
 _SUPERVISOR_MAX_SUBAGENT_CALLS_ENV = "SUPERVISOR_MAX_SUBAGENT_CALLS_PER_AGENT"
@@ -182,6 +183,7 @@ class RuntimeEngine:
         state: RuntimeState,
         requested_workflow_id: Optional[str] = None,
         step_callback: Optional[StepCallback] = None,
+        event_callback: Optional[EventCallback] = None,
     ) -> Dict[str, Any]:
         self._ensure_registry_loaded()
         state["runtime"]["status"] = "running"
@@ -190,6 +192,7 @@ class RuntimeEngine:
                 state=state,
                 requested_workflow_id=requested_workflow_id,
                 step_callback=step_callback,
+                event_callback=event_callback,
             )
         except Exception as exc:
             state["runtime"]["status"] = "failed"
@@ -256,6 +259,7 @@ class RuntimeEngine:
         state: RuntimeState,
         requested_workflow_id: Optional[str],
         step_callback: Optional[StepCallback],
+        event_callback: Optional[EventCallback],
     ) -> None:
         await self._supervisor_orchestrator.run_async(
             state=state,
@@ -263,15 +267,17 @@ class RuntimeEngine:
             step_callback=step_callback,
             supervisor_spec=self._resolve_supervisor_spec(),
             run_workflow_async=self._run_workflow_async,
-            finalize_with_supervisor_async=lambda s, wf: self._supervisor_decision.finalize_with_supervisor_async(
+            finalize_with_supervisor_async=lambda s, wf, stream_text_delta: self._supervisor_decision.finalize_with_supervisor_async(
                 state=s,
                 requested_workflow_id=wf,
+                stream_text_delta=stream_text_delta,
             ),
             run_chitchat_async=self._run_chitchat_async,
-            decide_next_action_async=lambda s, spec, wf: self._supervisor_decision.decide_next_action_async(
+            decide_next_action_async=lambda s, spec, wf, stream_text_delta: self._supervisor_decision.decide_next_action_async(
                 state=s,
                 supervisor_spec=spec,
                 requested_workflow_id=wf,
+                stream_text_delta=stream_text_delta,
             ),
             resolve_workflow_target=self._supervisor_decision.resolve_workflow_target,
             resolve_subagent_target=self._supervisor_decision.resolve_subagent_target,
@@ -280,7 +286,19 @@ class RuntimeEngine:
             execute_subagent_isolated_async=self._isolation_coordinator.execute_subagent_isolated_async,
             ensure_turn_tool_budget=self._tool_budget.ensure_turn_tool_budget,
             emit_step_callback_async=self._emit_step_callback_async,
+            emit_runtime_event_async=lambda payload: self._emit_event_callback_async(event_callback, payload),
         )
+
+    async def _emit_event_callback_async(
+        self,
+        event_callback: Optional[EventCallback],
+        payload: Dict[str, Any],
+    ) -> None:
+        if event_callback is None:
+            return
+        result = event_callback(payload)
+        if inspect.isawaitable(result):
+            await result
 
     def _run_workflow(
         self,

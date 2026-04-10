@@ -252,6 +252,16 @@ class AcademicCopilotApp:
             if websocket_send:
                 await websocket_send(self._build_step_event(step))
 
+        async def _capture_runtime_event(payload: Dict[str, Any]) -> None:
+            if websocket_send:
+                await websocket_send(
+                    {
+                        **payload,
+                        "session_id": sid,
+                        "timestamp": _ts(),
+                    }
+                )
+
         timeout_seconds = _chat_turn_timeout_seconds()
         _warn_timeout_misconfiguration(timeout_seconds)
 
@@ -276,13 +286,25 @@ class AcademicCopilotApp:
             except Exception as exc:
                 logger.exception("Memory pipeline failed (non-fatal): %s", exc)
 
-        try:
-            result = await asyncio.wait_for(
-                self.runtime.run_turn_async(
+        async def _run_turn_with_callbacks() -> Dict[str, Any]:
+            try:
+                return await self.runtime.run_turn_async(
                     state,
                     requested_workflow_id=workflow_id,
                     step_callback=_capture_step,
-                ),
+                    event_callback=_capture_runtime_event,
+                )
+            except TypeError:
+                # Backward compatibility for tests/mocks that still expose the old signature.
+                return await self.runtime.run_turn_async(
+                    state,
+                    requested_workflow_id=workflow_id,
+                    step_callback=_capture_step,
+                )
+
+        try:
+            result = await asyncio.wait_for(
+                _run_turn_with_callbacks(),
                 timeout=timeout_seconds,
             )
         except asyncio.TimeoutError:
