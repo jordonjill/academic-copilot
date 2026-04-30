@@ -23,6 +23,7 @@ class AgentExecutionService:
         coerce_text: Callable[[Any], str],
         try_parse_json: Callable[[str], Optional[Dict[str, Any]]],
         normalize_agent_parsed_payload: Callable[[str, Optional[Dict[str, Any]]], Optional[Dict[str, Any]]],
+        invoke_sync: Callable[[Any, Any, Optional[dict[str, Any]]], Any],
         invoke_async: Callable[[Any, Any, Optional[dict[str, Any]]], Awaitable[Any]],
         extract_last_ai_text: Callable[[list[Any]], str],
         extract_tool_outputs: Callable[[list[Any]], list[Any]],
@@ -40,6 +41,7 @@ class AgentExecutionService:
         self._coerce_text = coerce_text
         self._try_parse_json = try_parse_json
         self._normalize_agent_parsed_payload = normalize_agent_parsed_payload
+        self._invoke_sync = invoke_sync
         self._invoke_async = invoke_async
         self._extract_last_ai_text = extract_last_ai_text
         self._extract_tool_outputs = extract_tool_outputs
@@ -69,7 +71,15 @@ class AgentExecutionService:
             return
 
         payload = self.build_chain_payload(state, node_name, agent_id)
-        raw = runnable.invoke(payload)
+        raw = self._invoke_sync(
+            runnable,
+            payload,
+            self._agent_langchain_config(
+                node_name=node_name,
+                agent_id=agent_id,
+                mode=spec.mode,
+            ),
+        )
         text = self._coerce_text(raw)
         parsed = self._normalize_agent_parsed_payload(text, self._try_parse_json(text))
 
@@ -100,7 +110,15 @@ class AgentExecutionService:
             return
 
         payload = self.build_chain_payload(state, node_name, agent_id)
-        raw = await self._invoke_async(runnable, payload, None)
+        raw = await self._invoke_async(
+            runnable,
+            payload,
+            self._agent_langchain_config(
+                node_name=node_name,
+                agent_id=agent_id,
+                mode=spec.mode,
+            ),
+        )
         text = self._coerce_text(raw)
         parsed = self._normalize_agent_parsed_payload(text, self._try_parse_json(text))
 
@@ -196,15 +214,13 @@ class AgentExecutionService:
         payload: dict[str, Any],
         *,
         max_internal_steps: int,
+        config: Optional[dict[str, Any]] = None,
     ) -> Any:
         invoke = getattr(runnable, "invoke", None)
         if not callable(invoke):
             raise TypeError(f"Runnable {type(runnable).__name__} has no invoke for react execution")
-        config = {"recursion_limit": max(1, int(max_internal_steps))}
-        try:
-            return invoke(payload, config=config)
-        except TypeError:
-            return invoke(payload)
+        react_config = self._react_langchain_config(config, max_internal_steps=max_internal_steps)
+        return self._invoke_sync(runnable, payload, react_config)
 
     async def invoke_react_async(
         self,
@@ -212,9 +228,51 @@ class AgentExecutionService:
         payload: dict[str, Any],
         *,
         max_internal_steps: int,
+        config: Optional[dict[str, Any]] = None,
     ) -> Any:
-        config = {"recursion_limit": max(1, int(max_internal_steps))}
-        return await self._invoke_async(runnable, payload, config)
+        react_config = self._react_langchain_config(config, max_internal_steps=max_internal_steps)
+        return await self._invoke_async(runnable, payload, react_config)
+
+    def _react_langchain_config(
+        self,
+        config: Optional[dict[str, Any]],
+        *,
+        max_internal_steps: int,
+    ) -> dict[str, Any]:
+        merged = dict(config or {})
+        merged["recursion_limit"] = max(1, int(max_internal_steps))
+        merged.setdefault("run_name", "agent.react")
+
+        metadata = dict(merged.get("metadata") or {})
+        metadata.setdefault("agent_mode", "react")
+        merged["metadata"] = metadata
+
+        tags: list[str] = []
+        existing_tags = merged.get("tags")
+        if isinstance(existing_tags, (list, tuple)):
+            tags.extend(str(tag) for tag in existing_tags)
+        elif isinstance(existing_tags, str):
+            tags.append(existing_tags)
+        tags.extend(["agent", "react"])
+        merged["tags"] = list(dict.fromkeys(tags))
+        return merged
+
+    def _agent_langchain_config(
+        self,
+        *,
+        node_name: str,
+        agent_id: str,
+        mode: str,
+    ) -> dict[str, Any]:
+        return {
+            "run_name": f"agent.{agent_id}",
+            "metadata": {
+                "node_name": node_name,
+                "agent_id": agent_id,
+                "agent_mode": mode,
+            },
+            "tags": ["agent", f"agent:{agent_id}", f"mode:{mode}"],
+        }
 
     def _execute_react_agent(
         self,
@@ -230,6 +288,11 @@ class AgentExecutionService:
             runnable,
             {"messages": messages},
             max_internal_steps=max_internal_steps,
+            config=self._agent_langchain_config(
+                node_name=node_name,
+                agent_id=agent_id,
+                mode=spec.mode,
+            ),
         )
 
         next_messages = raw.get("messages") if isinstance(raw, dict) else None
@@ -262,6 +325,11 @@ class AgentExecutionService:
             runnable,
             {"messages": messages},
             max_internal_steps=max_internal_steps,
+            config=self._agent_langchain_config(
+                node_name=node_name,
+                agent_id=agent_id,
+                mode=spec.mode,
+            ),
         )
 
         next_messages = raw.get("messages") if isinstance(raw, dict) else None

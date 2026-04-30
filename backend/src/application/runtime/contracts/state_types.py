@@ -23,6 +23,7 @@ class RuntimeMetaState(TypedDict):
     step_count: int
     loop_count: int
     status: str
+    token_usage: NotRequired[dict[str, Any]]
 
 
 class RuntimeIOState(TypedDict):

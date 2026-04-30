@@ -109,7 +109,10 @@ def export_pdf(title: str, content: str, output_path: str) -> dict[str, str]:
     if title:
         title_font_size = 16
         title_line_height = 24
-        title_measure = lambda s: pdf.stringWidth(s, active_font, title_font_size)
+
+        def title_measure(s: str) -> float:
+            return pdf.stringWidth(s, active_font, title_font_size)
+
         title_lines = _wrap_text_lines(title, content_width, title_measure)
         pdf.setFont(active_font, title_font_size)
         for line in title_lines:
@@ -123,7 +126,10 @@ def export_pdf(title: str, content: str, output_path: str) -> dict[str, str]:
 
     body_font_size = 12
     body_line_height = 18
-    body_measure = lambda s: pdf.stringWidth(s, active_font, body_font_size)
+
+    def body_measure(s: str) -> float:
+        return pdf.stringWidth(s, active_font, body_font_size)
+
     body_lines = _wrap_text_lines(content, content_width, body_measure)
     pdf.setFont(active_font, body_font_size)
     for line in body_lines:

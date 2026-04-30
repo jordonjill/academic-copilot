@@ -14,6 +14,24 @@ export type RuntimeInfo = {
   step_count: number;
   loop_count: number;
   status: string;
+  token_usage?: {
+    calls: number;
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    cached_tokens?: number;
+    reasoning_tokens?: number;
+    estimated_calls?: number;
+    by_model?: Record<string, {
+      calls: number;
+      input_tokens: number;
+      output_tokens: number;
+      total_tokens: number;
+      cached_tokens?: number;
+      reasoning_tokens?: number;
+      estimated_calls?: number;
+    }>;
+  };
   tool_budget?: {
     scope: string;
     workflow_id: string | null;

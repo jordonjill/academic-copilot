@@ -5,7 +5,7 @@ import asyncio
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from src.interfaces.api.routes import admin, chat
+from src.interfaces.api.routes import admin, chat, sessions
 
 
 AUTH_HEADERS = {"Authorization": "Bearer 123"}
@@ -35,9 +35,26 @@ class _StructuredCopilot:
         }
 
 
+class _SessionDeleteCopilot:
+    def __init__(self) -> None:
+        self.deleted_session_id: str | None = None
+
+    def delete_session(self, session_id: str) -> dict[str, int]:
+        self.deleted_session_id = session_id
+        return {
+            "sessions": 1,
+            "messages": 2,
+            "raw_messages": 2,
+            "working_context": 1,
+            "compression_events": 0,
+            "ltm_facts": 1,
+        }
+
+
 def _build_client() -> TestClient:
     app = FastAPI()
     app.include_router(chat.router)
+    app.include_router(sessions.router)
     app.include_router(admin.router)
     return TestClient(app)
 
@@ -119,6 +136,25 @@ def test_chat_accepts_workflow_id_and_returns_200(monkeypatch):
     payload = response.json()
     assert payload["success"] is True
     assert captured["workflow_id"] == "proposal_v2"
+
+
+def test_delete_session_returns_deleted_counts(monkeypatch):
+    copilot = _SessionDeleteCopilot()
+    monkeypatch.setattr(
+        "src.interfaces.api.routes.sessions.create_copilot",
+        lambda: copilot,
+    )
+
+    client = _build_client()
+    response = client.delete("/sessions/s-abc", headers=AUTH_HEADERS)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["message"] == "Session deleted."
+    assert payload["data"]["session_id"] == "s-abc"
+    assert payload["data"]["deleted"]["messages"] == 2
+    assert copilot.deleted_session_id == "s-abc"
 
 
 def test_chat_returns_504_on_timeout(monkeypatch):

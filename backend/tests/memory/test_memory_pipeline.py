@@ -5,7 +5,6 @@ from langchain_core.language_models.fake_chat_models import (
     FakeListChatModel,
     FakeMessagesListChatModel,
 )
-from langchain_core.language_models import BaseLanguageModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages.utils import messages_from_dict
 
@@ -159,7 +158,7 @@ def test_non_string_summary_recorded(monkeypatch, tmp_path):
 
 
 def test_recent_raw_context_preserved(monkeypatch, tmp_path):
-    db_path = _prepare_db(tmp_path, monkeypatch)
+    _prepare_db(tmp_path, monkeypatch)
     monkeypatch.setattr(stm_module, "STM_TOKEN_THRESHOLD", 1)
     monkeypatch.setattr(stm_module, "STM_KEEP_RECENT", 4)
     messages = [

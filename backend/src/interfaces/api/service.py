@@ -20,7 +20,7 @@ import re
 import threading
 import uuid
 from collections import OrderedDict
-from datetime import datetime
+from datetime import datetime, timezone
 from time import perf_counter
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
@@ -34,6 +34,7 @@ from src.application.runtime.runtime_engine import RuntimeEngine
 from src.application.runtime.utils.env_utils import read_env_float
 from src.infrastructure.memory import MemoryAdapter
 from src.infrastructure.memory.sqlite_store import SQLiteStore
+from src.infrastructure.observability.langfuse_observability import observe_chat_turn
 from src.infrastructure.tools.tool_manager import get_tool_manager
 from src.infrastructure.tools.loader import reload_tools
 
@@ -302,25 +303,42 @@ class AcademicCopilotApp:
                     step_callback=_capture_step,
                 )
 
-        try:
-            result = await asyncio.wait_for(
-                _run_turn_with_callbacks(),
-                timeout=timeout_seconds,
-            )
-        except asyncio.TimeoutError:
-            _log_event(
-                "chat.turn.timeout",
-                session_id=sid,
-                user_id=user_id,
-                timeout_seconds=timeout_seconds,
-            )
-            await _persist_memory_best_effort()
-            raise asyncio.TimeoutError(f"Chat turn timed out after {int(timeout_seconds)} seconds")
-        except Exception:
-            await _persist_memory_best_effort()
-            raise
+        with observe_chat_turn(
+            user_message=user_message,
+            user_id=user_id,
+            session_id=sid,
+            workflow_id=workflow_id,
+        ) as observation:
+            try:
+                result = await asyncio.wait_for(
+                    _run_turn_with_callbacks(),
+                    timeout=timeout_seconds,
+                )
+            except asyncio.TimeoutError as exc:
+                observation.update_error(exc)
+                _attach_token_usage(state, observation.token_usage())
+                _log_event(
+                    "chat.turn.timeout",
+                    session_id=sid,
+                    user_id=user_id,
+                    timeout_seconds=timeout_seconds,
+                    token_usage=state.get("runtime", {}).get("token_usage"),
+                )
+                await _persist_memory_best_effort()
+                _attach_token_usage(state, observation.token_usage())
+                raise asyncio.TimeoutError(
+                    f"Chat turn timed out after {int(timeout_seconds)} seconds"
+                ) from exc
+            except Exception as exc:
+                observation.update_error(exc)
+                await _persist_memory_best_effort()
+                _attach_token_usage(state, observation.token_usage())
+                raise
 
-        await _persist_memory_best_effort()
+            _attach_token_usage(state, observation.token_usage())
+            await _persist_memory_best_effort()
+            _attach_token_usage(state, observation.token_usage())
+            observation.update_output(result)
 
         self._remember_state(sid, state)
         _log_event(
@@ -330,6 +348,7 @@ class AcademicCopilotApp:
             result_type=result.get("type"),
             runtime_mode=state.get("runtime", {}).get("mode"),
             step_count=state.get("runtime", {}).get("step_count"),
+            token_usage=state.get("runtime", {}).get("token_usage"),
             duration_ms=round((perf_counter() - started) * 1000, 2),
         )
 
@@ -353,6 +372,11 @@ class AcademicCopilotApp:
                 return None
             _, latest = next(reversed(self._last_states.items()))
             return latest
+
+    def delete_session(self, session_id: str) -> dict[str, int]:
+        with self._last_states_lock:
+            self._last_states.pop(session_id, None)
+        return self.memory.delete_session(session_id)
 
     def health_check(self) -> Dict[str, Any]:
         try:
@@ -464,7 +488,7 @@ def create_copilot(model_type: str = "ollama") -> AcademicCopilotApp:
 
 
 def _ts() -> str:
-    return datetime.now().isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _memory_probe() -> Dict[str, Any]:
@@ -474,6 +498,14 @@ def _memory_probe() -> Dict[str, Any]:
         return {"ok": True}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+def _attach_token_usage(state: RuntimeState, token_usage: dict[str, Any]) -> None:
+    if not token_usage:
+        return
+    runtime_state = state.get("runtime")
+    if isinstance(runtime_state, dict):
+        runtime_state["token_usage"] = token_usage
 
 
 def _log_event(event: str, **fields: Any) -> None:

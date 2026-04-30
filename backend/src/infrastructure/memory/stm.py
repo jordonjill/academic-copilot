@@ -40,6 +40,7 @@ from src.infrastructure.config.config import (
 )
 from src.infrastructure.config.prompt import STM_COMPRESSION_PROMPT
 from src.infrastructure.memory.sqlite_store import SQLiteStore
+from src.infrastructure.observability.langfuse_observability import build_langchain_config
 
 COMPRESSION_SUMMARY_VERSION = "stm-v1"
 logger = logging.getLogger(__name__)
@@ -303,7 +304,24 @@ def stm_compression_node(
                     for m in old_messages
                 )
                 compression_chain = STM_COMPRESSION_PROMPT | llm
-                summary_response = compression_chain.invoke({"conversation_to_compress": conversation_text})
+                compression_config = build_langchain_config(
+                    {
+                        "run_name": "memory.stm_compression",
+                        "metadata": {
+                            "memory_stage": "stm_compression",
+                            "session_id": session_id,
+                            "user_id": user_id,
+                        },
+                        "tags": ["memory", "stm"],
+                    }
+                )
+                try:
+                    summary_response = compression_chain.invoke(
+                        {"conversation_to_compress": conversation_text},
+                        config=compression_config,
+                    )
+                except TypeError:
+                    summary_response = compression_chain.invoke({"conversation_to_compress": conversation_text})
                 summary_text = _normalize_summary_text(summary_response)
                 summary_text = _trim_text_to_token_budget(
                     summary_text,

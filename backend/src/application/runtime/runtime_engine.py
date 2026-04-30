@@ -30,6 +30,7 @@ from src.application.runtime.orchestration.supervisor_payload_builder import Sup
 from src.application.runtime.orchestration.workflow_executor import WorkflowExecutor
 from src.application.runtime.providers.context_facility import ContextFacility
 from src.application.runtime.providers.llm_provider import LLMProvider
+from src.infrastructure.observability.langfuse_observability import build_langchain_config
 from src.infrastructure.memory.ltm import load_ltm_profile_for_supervisor
 from src.infrastructure.tools.registry import get_tool
 
@@ -101,6 +102,7 @@ class RuntimeEngine:
             normalize_agent_parsed_payload=lambda text, parsed: self._codec.normalize_agent_parsed_payload(
                 text, parsed
             ),
+            invoke_sync=lambda runnable, payload, config: self._invoke_sync(runnable, payload, config=config),
             invoke_async=lambda runnable, payload, config: self._invoke_async(runnable, payload, config=config),
             extract_last_ai_text=lambda messages: self._codec.extract_last_ai_text(messages),
             extract_tool_outputs=lambda messages: self._codec.extract_tool_outputs(messages),
@@ -134,6 +136,7 @@ class RuntimeEngine:
             ),
             coerce_text=lambda raw: self._codec.coerce_text(raw),
             try_parse_supervisor_decision_json=lambda text: self._codec.try_parse_supervisor_decision_json(text),
+            invoke_sync=lambda runnable, payload, config: self._invoke_sync(runnable, payload, config=config),
             invoke_async=lambda runnable, payload, config: self._invoke_async(runnable, payload, config=config),
         )
         self._isolation = IsolationFacility(
@@ -209,7 +212,15 @@ class RuntimeEngine:
     def _run_chitchat(self, state: RuntimeState) -> None:
         llm = self._resolve_default_llm()
         messages = list(state["context"].get("messages", []))
-        response = llm.invoke([SystemMessage(content=CHITCHAT_SYSTEM)] + messages)
+        response = self._invoke_sync(
+            llm,
+            [SystemMessage(content=CHITCHAT_SYSTEM)] + messages,
+            config={
+                "run_name": "chitchat",
+                "metadata": {"runtime_path": "chitchat"},
+                "tags": ["chitchat"],
+            },
+        )
         text = self._codec.coerce_text(response)
         state["io"]["last_model_output"] = text
         state["output"]["final_text"] = text
@@ -218,7 +229,15 @@ class RuntimeEngine:
     async def _run_chitchat_async(self, state: RuntimeState) -> None:
         llm = self._resolve_default_llm()
         messages = list(state["context"].get("messages", []))
-        response = await self._invoke_async(llm, [SystemMessage(content=CHITCHAT_SYSTEM)] + messages)
+        response = await self._invoke_async(
+            llm,
+            [SystemMessage(content=CHITCHAT_SYSTEM)] + messages,
+            config={
+                "run_name": "chitchat",
+                "metadata": {"runtime_path": "chitchat"},
+                "tags": ["chitchat"],
+            },
+        )
         text = self._codec.coerce_text(response)
         state["io"]["last_model_output"] = text
         state["output"]["final_text"] = text
@@ -417,18 +436,36 @@ class RuntimeEngine:
         if inspect.isawaitable(result):
             await result
 
+    def _invoke_sync(
+        self,
+        runnable: Any,
+        payload: Any,
+        config: Optional[dict[str, Any]] = None,
+    ) -> Any:
+        invoke = getattr(runnable, "invoke", None)
+        if not callable(invoke):
+            raise TypeError(f"Runnable {type(runnable).__name__} has no invoke")
+        effective_config = build_langchain_config(config)
+        if effective_config is not None:
+            try:
+                return invoke(payload, config=effective_config)
+            except TypeError:
+                pass
+        return invoke(payload)
+
     async def _invoke_async(
         self,
         runnable: Any,
         payload: Any,
         config: Optional[dict[str, Any]] = None,
     ) -> Any:
+        effective_config = build_langchain_config(config)
         ainvoke = getattr(runnable, "ainvoke", None)
         if callable(ainvoke):
             try:
-                if config is not None:
+                if effective_config is not None:
                     try:
-                        return await ainvoke(payload, config=config)
+                        return await ainvoke(payload, config=effective_config)
                     except TypeError:
                         pass
                 return await ainvoke(payload)
@@ -444,9 +481,9 @@ class RuntimeEngine:
                 )
         invoke = getattr(runnable, "invoke", None)
         if callable(invoke):
-            if config is not None:
+            if effective_config is not None:
                 try:
-                    return await asyncio.to_thread(invoke, payload, config)
+                    return await asyncio.to_thread(invoke, payload, effective_config)
                 except TypeError:
                     pass
             return await asyncio.to_thread(invoke, payload)

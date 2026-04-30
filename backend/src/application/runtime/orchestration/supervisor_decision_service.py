@@ -9,6 +9,7 @@ from langchain_core.messages import AIMessage
 from src.application.runtime.contracts.io_models import SupervisorDecision
 from src.application.runtime.contracts.spec_models import AgentSpec
 from src.application.runtime.contracts.state_types import RuntimeState
+from src.infrastructure.observability.langfuse_observability import build_langchain_config
 
 _SUPERVISOR_ACTION_MAP = {
     "run_subagent": "run_agent",
@@ -105,6 +106,7 @@ class SupervisorDecisionService:
         build_supervisor_payload: Callable[[RuntimeState, AgentSpec, Optional[str], bool], Dict[str, Any]],
         coerce_text: Callable[[Any], str],
         try_parse_supervisor_decision_json: Callable[[str], Optional[Dict[str, Any]]],
+        invoke_sync: Callable[[Any, Any, Optional[dict[str, Any]]], Any],
         invoke_async: Callable[[Any, Any, Optional[dict[str, Any]]], Awaitable[Any]],
     ) -> None:
         self._registry = registry
@@ -116,6 +118,7 @@ class SupervisorDecisionService:
         self._build_supervisor_payload = build_supervisor_payload
         self._coerce_text = coerce_text
         self._try_parse_supervisor_decision_json = try_parse_supervisor_decision_json
+        self._invoke_sync = invoke_sync
         self._invoke_async = invoke_async
 
     async def _invoke_supervisor_async(
@@ -123,15 +126,25 @@ class SupervisorDecisionService:
         *,
         runnable: Any,
         payload: Dict[str, Any],
+        config: Optional[dict[str, Any]] = None,
         stream_text_delta: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> str:
+        effective_config = build_langchain_config(config)
         if callable(stream_text_delta):
             astream = getattr(runnable, "astream", None)
             if callable(astream):
                 streamed_raw = ""
                 emitted_text = ""
                 try:
-                    async for chunk in astream(payload):
+                    stream = None
+                    if effective_config is not None:
+                        try:
+                            stream = astream(payload, config=effective_config)
+                        except TypeError:
+                            stream = None
+                    if stream is None:
+                        stream = astream(payload)
+                    async for chunk in stream:
                         piece = self._coerce_text(chunk)
                         if not piece:
                             continue
@@ -159,7 +172,7 @@ class SupervisorDecisionService:
         raw = await self._invoke_async(
             runnable,
             payload,
-            None,
+            config,
         )
         return self._coerce_text(raw)
 
@@ -172,13 +185,19 @@ class SupervisorDecisionService:
     ) -> Dict[str, Any]:
         llm = self._resolve_llm(supervisor_spec)
         runnable = self._build_agent_from_spec(supervisor_spec, llm, self._resolve_tool)
-        raw = runnable.invoke(
+        raw = self._invoke_sync(
+            runnable,
             self._build_supervisor_payload(
                 state,
                 supervisor_spec,
                 requested_workflow_id,
                 False,
-            )
+            ),
+            self._supervisor_langchain_config(
+                supervisor_spec=supervisor_spec,
+                requested_workflow_id=requested_workflow_id,
+                workflow_completed=False,
+            ),
         )
         text = self._coerce_text(raw)
         if not text.strip():
@@ -212,6 +231,11 @@ class SupervisorDecisionService:
                 requested_workflow_id,
                 False,
             ),
+            config=self._supervisor_langchain_config(
+                supervisor_spec=supervisor_spec,
+                requested_workflow_id=requested_workflow_id,
+                workflow_completed=False,
+            ),
             stream_text_delta=stream_text_delta,
         )
         if not text.strip():
@@ -239,13 +263,19 @@ class SupervisorDecisionService:
 
         llm = self._resolve_llm(supervisor_spec)
         runnable = self._build_agent_from_spec(supervisor_spec, llm, self._resolve_tool)
-        raw = runnable.invoke(
+        raw = self._invoke_sync(
+            runnable,
             self._build_supervisor_payload(
                 state,
                 supervisor_spec,
                 requested_workflow_id,
                 True,
-            )
+            ),
+            self._supervisor_langchain_config(
+                supervisor_spec=supervisor_spec,
+                requested_workflow_id=requested_workflow_id,
+                workflow_completed=True,
+            ),
         )
         text = self._coerce_text(raw)
         parsed = self._try_parse_supervisor_decision_json(text)
@@ -282,6 +312,11 @@ class SupervisorDecisionService:
                 supervisor_spec,
                 requested_workflow_id,
                 True,
+            ),
+            config=self._supervisor_langchain_config(
+                supervisor_spec=supervisor_spec,
+                requested_workflow_id=requested_workflow_id,
+                workflow_completed=True,
             ),
             stream_text_delta=stream_text_delta,
         )
@@ -382,6 +417,25 @@ class SupervisorDecisionService:
                 done=False,
                 reason="invalid supervisor decision payload, degraded to direct_reply",
             )
+
+    def _supervisor_langchain_config(
+        self,
+        *,
+        supervisor_spec: AgentSpec,
+        requested_workflow_id: Optional[str],
+        workflow_completed: bool,
+    ) -> dict[str, Any]:
+        phase = "finalize" if workflow_completed else "decide"
+        return {
+            "run_name": f"supervisor.{phase}",
+            "metadata": {
+                "agent_id": supervisor_spec.id,
+                "agent_mode": supervisor_spec.mode,
+                "requested_workflow_id": requested_workflow_id,
+                "workflow_completed": workflow_completed,
+            },
+            "tags": ["supervisor", f"agent:{supervisor_spec.id}", f"phase:{phase}"],
+        }
 
     def resolve_workflow_target(self, decision: Dict[str, Any], state: RuntimeState) -> Optional[str]:
         del state

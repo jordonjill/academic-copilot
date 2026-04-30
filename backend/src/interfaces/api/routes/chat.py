@@ -134,13 +134,13 @@ async def chat(
         result, _ = await _run_chat_turn(request=request, session_id=session_id)
     except (asyncio.TimeoutError, TimeoutError) as e:
         logger.warning("[chat] timeout: %s", e)
-        raise HTTPException(status_code=504, detail=str(e))
+        raise HTTPException(status_code=504, detail=str(e)) from e
     except ValueError as e:
         logger.warning("[chat] bad request: %s", e)
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         logger.exception("[chat] error")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
     return _coerce_chat_response_payload(result, session_id=session_id)
 

@@ -18,7 +18,8 @@ def clear_hooks():
 
 
 def test_register_then_resolve():
-    HOOK_REGISTRY  # ensure the read-only view is accessible
+    assert HOOK_REGISTRY == {}
+
     def sample_hook():
         return "ok"
 

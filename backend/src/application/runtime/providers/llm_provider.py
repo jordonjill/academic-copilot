@@ -23,7 +23,7 @@ class LLMProvider:
         self._registry = registry
         self._env_placeholder_pattern = env_placeholder_pattern
         self._create_chat_openai = create_chat_openai or ChatOpenAI
-        self._llm_cache: OrderedDict[tuple[str, str, str, str, str, str], BaseLanguageModel] = OrderedDict()
+        self._llm_cache: OrderedDict[tuple[str, str, str, str, str, str, str], BaseLanguageModel] = OrderedDict()
         self._llm_cache_max_size = max(1, read_env_int("LLM_CACHE_MAX_SIZE", 128, minimum=1))
         self._llm_cache_lock = threading.Lock()
         self._llm_cache_hits = 0
@@ -68,6 +68,13 @@ class LLMProvider:
         cache_timeout = f"{llm_timeout_seconds:.3f}"
         user_agent = _resolve_openai_compat_user_agent(base_url)
         cache_user_agent = user_agent or ""
+        stream_usage = os.getenv("LANGFUSE_STREAM_USAGE_ENABLED", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        cache_stream_usage = "1" if stream_usage else "0"
 
         key = (
             profile_name,
@@ -76,6 +83,7 @@ class LLMProvider:
             cache_temperature,
             cache_timeout,
             cache_user_agent,
+            cache_stream_usage,
         )
         kwargs: dict[str, Any] = {
             "model": model,
@@ -88,6 +96,8 @@ class LLMProvider:
             kwargs["api_key"] = api_key
         if user_agent:
             kwargs["default_headers"] = {"User-Agent": user_agent}
+        if stream_usage:
+            kwargs["stream_usage"] = True
 
         with self._llm_cache_lock:
             cached = self._llm_cache.get(key)

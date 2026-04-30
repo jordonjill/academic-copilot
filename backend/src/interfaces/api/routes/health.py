@@ -1,7 +1,7 @@
 """系统状态端点。"""
 from __future__ import annotations
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict
 
 from fastapi import APIRouter, Depends
@@ -23,12 +23,12 @@ async def health(
             "healthy": result["status"] == "healthy",
             "status": result["message"],
             "probe": result.get("probe"),
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
     except Exception as e:
-        logger.error(f"[health] {e}")
+        logger.exception("[health] probe failed")
         return {
             "healthy": False,
             "status": str(e),
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }

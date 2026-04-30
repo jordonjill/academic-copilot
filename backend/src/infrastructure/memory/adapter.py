@@ -44,6 +44,9 @@ class MemoryAdapter:
         summary = self.extract_memory_summary(messages)
         return messages, summary
 
+    def delete_session(self, session_id: str) -> dict[str, int]:
+        return self.store.delete_session(session_id)
+
     def persist_turn(
         self,
         state: dict[str, Any],

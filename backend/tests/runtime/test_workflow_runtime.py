@@ -332,7 +332,10 @@ def test_next_node_for_saturated_node_avoids_self_loop():
 
 
 def test_workflow_spec_rejects_sum_of_node_caps_exceeding_max_steps():
-    with pytest.raises(ValueError, match="sum of node visit limits must be <= limits.max_steps"):
+    with pytest.raises(
+        ValueError,
+        match=r"sum of node visit limits must be <= limits\.max_steps",
+    ):
         WorkflowSpec.model_validate(
             {
                 "id": "bad_caps",

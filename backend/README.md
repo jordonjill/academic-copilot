@@ -51,6 +51,7 @@ Copy `.env.example` to `.env` and set:
 - `JINA_API_KEY` (optional)
 - `ZOTERO_API_KEY` (optional)
 - Runtime/memory/tool envs shown in `.env.example` (`SUPERVISOR_MAX_*`, `WORKFLOW_MAX_*`, `CHAT_TURN_TIMEOUT_SECONDS`, `LLM_REQUEST_TIMEOUT_SECONDS`, `CHAT_MAX_WORKERS`, etc.)
+- Observability envs: `TOKEN_USAGE_OBSERVABILITY_ENABLED`, `LANGFUSE_ENABLED`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL`
 - Rate-limit envs: `CHAT_RATE_LIMIT_ENABLED`, `CHAT_RATE_LIMIT_REQUESTS`, `CHAT_RATE_LIMIT_WINDOW_SECONDS`
 
 ## Run
@@ -116,6 +117,29 @@ At startup, validation issues stop the app from booting.
   - start a workflow
 - Explicit `workflow_id` in `/chat` runs that workflow directly.
 - Workflow runtime enforces edge constraints and step/loop limits.
+
+## Observability
+
+Token usage collection is enabled by default via `TOKEN_USAGE_OBSERVABILITY_ENABLED=true`.
+It is attached through LangChain callbacks and returned in the chat result runtime payload under
+`runtime.token_usage`. Provider-reported usage is preferred. If a provider does not return usage,
+the backend records a best-effort estimate and increments `estimated_calls`.
+
+Langfuse export is opt-in:
+
+```bash
+LANGFUSE_ENABLED=true
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
+LANGFUSE_TRACING_ENVIRONMENT=development
+```
+
+Each chat turn becomes one Langfuse trace/span with `user_id`, `session_id`, workflow tags,
+LangChain child observations, and token/cost data where available. OpenAI-compatible proxies and
+local models may need custom model definitions in Langfuse for accurate cost inference. When
+Langfuse export is enabled, prompts and model outputs are captured for personal debugging, with
+built-in masking/truncation applied to common secrets and very long strings.
 
 ## Timeout & Concurrency Tuning
 

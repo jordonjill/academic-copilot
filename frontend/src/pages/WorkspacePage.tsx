@@ -7,7 +7,7 @@ import { RuntimePanel } from "../features/runtime/RuntimePanel";
 import { SessionSidebar } from "../features/sessions/SessionSidebar";
 import { loadSessions, newSessionId, saveSessions, type SessionItem } from "../features/sessions/sessionStore";
 import { WorkflowSelector, type WorkflowMode } from "../features/workflow/WorkflowSelector";
-import { streamChat } from "../lib/api";
+import { deleteSession, streamChat } from "../lib/api";
 import { HttpError } from "../lib/http";
 import type { ChatArtifacts, ChatMessage, RuntimeInfo, WorkflowId } from "../types/api";
 
@@ -107,6 +107,60 @@ export function WorkspacePage() {
     setRuntimeBySession((prev) => ({ ...prev, [sessionId]: undefined }));
     setArtifactsBySession((prev) => ({ ...prev, [sessionId]: undefined }));
     setStreamingTextBySession((prev) => ({ ...prev, [sessionId]: undefined }));
+  }
+
+  function removeSessionBuckets(sessionId: string) {
+    setMessagesBySession((prev) => {
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
+    setRuntimeBySession((prev) => {
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
+    setArtifactsBySession((prev) => {
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
+    setStreamingTextBySession((prev) => {
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
+  }
+
+  function onDeleteSession(sessionId: string) {
+    if (pending) {
+      return;
+    }
+    const session = sessions.find((item) => item.id === sessionId);
+    const confirmed = window.confirm(`Delete session "${session?.title ?? sessionId}"?`);
+    if (!confirmed) {
+      return;
+    }
+
+    const remaining = sessions.filter((item) => item.id !== sessionId);
+    const nextSessions =
+      remaining.length > 0
+        ? remaining
+        : [
+            {
+              id: newSessionId(),
+              title: "新会话",
+              createdAt: new Date().toISOString(),
+            },
+          ];
+    updateSessions(nextSessions);
+    removeSessionBuckets(sessionId);
+    if (activeSessionId === sessionId) {
+      setActiveSessionId(nextSessions[0].id);
+    }
+    void deleteSession(sessionId).catch((error) => {
+      console.warn("Failed to delete backend session", error);
+    });
   }
 
   async function retryLastUserTurn() {
@@ -248,6 +302,8 @@ export function WorkspacePage() {
         activeSessionId={activeSessionId}
         onSelect={setActiveSessionId}
         onCreate={onCreateSession}
+        onDelete={onDeleteSession}
+        deleteDisabled={pending}
       />
 
       <main className="chat-main panel">

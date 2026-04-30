@@ -15,6 +15,7 @@ export function RuntimePanel({ runtime }: Props) {
   }
 
   const budget = runtime.tool_budget;
+  const tokenUsage = runtime.token_usage;
 
   return (
     <section className="panel runtime-panel">
@@ -33,6 +34,35 @@ export function RuntimePanel({ runtime }: Props) {
         <dt>loop_count</dt>
         <dd>{runtime.loop_count}</dd>
       </dl>
+      {tokenUsage ? (
+        <div className="budget-block">
+          <h4>Token Usage</h4>
+          <ul>
+            <li>
+              <span>calls</span>
+              <span>{tokenUsage.calls}</span>
+            </li>
+            <li>
+              <span>input</span>
+              <span>{tokenUsage.input_tokens}</span>
+            </li>
+            <li>
+              <span>output</span>
+              <span>{tokenUsage.output_tokens}</span>
+            </li>
+            <li>
+              <span>total</span>
+              <span>{tokenUsage.total_tokens}</span>
+            </li>
+            {tokenUsage.estimated_calls ? (
+              <li>
+                <span>estimated</span>
+                <span>{tokenUsage.estimated_calls}</span>
+              </li>
+            ) : null}
+          </ul>
+        </div>
+      ) : null}
       {budget ? (
         <div className="budget-block">
           <h4>Tool Budget ({budget.scope})</h4>

@@ -284,3 +284,21 @@ class SQLiteStore:
                 "UPDATE sessions SET status=? WHERE session_id=?",
                 (status, session_id),
             )
+
+    def delete_session(self, session_id: str) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        with _get_conn() as conn:
+            for table in (
+                "compression_events",
+                "working_context",
+                "raw_messages",
+                "messages",
+                "ltm_facts",
+                "sessions",
+            ):
+                cursor = conn.execute(
+                    f"DELETE FROM {table} WHERE session_id=?",
+                    (session_id,),
+                )
+                counts[table] = max(0, cursor.rowcount)
+        return counts

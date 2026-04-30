@@ -8,7 +8,7 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -501,7 +501,7 @@ def claim_grounding_check(
     score = 1.0 if total == 0 else grounded / float(total)
     return {
         "ok": True,
-        "checked_at": datetime.utcnow().isoformat() + "Z",
+        "checked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "grounded_count": grounded,
         "total_claims": total,
         "grounding_score": round(score, 4),

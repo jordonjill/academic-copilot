@@ -88,5 +88,5 @@ async def enforce_chat_rate_limit(request: Request) -> None:
     raise HTTPException(
         status_code=429,
         detail="Rate limit exceeded for /chat",
-        headers={"Retry-After": str(int(math.ceil(retry_after)))},
+        headers={"Retry-After": str(math.ceil(retry_after))},
     )

@@ -17,7 +17,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from src.interfaces.api.service import create_copilot
+from src.interfaces.api.service import create_copilot  # noqa: E402
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -94,13 +94,13 @@ def _print_trace(result: dict[str, Any], events: list[dict[str, Any]]) -> None:
         runtime = data.get("runtime") if isinstance(data.get("runtime"), dict) else {}
         artifacts = data.get("artifacts") if isinstance(data.get("artifacts"), dict) else {}
 
-    print("[trace] runtime mode=%s workflow_id=%s step_count=%s loop_count=%s"
-          % (
-              runtime.get("mode"),
-              runtime.get("workflow_id"),
-              runtime.get("step_count"),
-              runtime.get("loop_count"),
-          ))
+    print(
+        "[trace] runtime "
+        f"mode={runtime.get('mode')} "
+        f"workflow_id={runtime.get('workflow_id')} "
+        f"step_count={runtime.get('step_count')} "
+        f"loop_count={runtime.get('loop_count')}"
+    )
 
     step_events = [evt for evt in events if isinstance(evt, dict) and evt.get("type") == "step"]
     if not step_events:
@@ -109,14 +109,11 @@ def _print_trace(result: dict[str, Any], events: list[dict[str, Any]]) -> None:
         print(f"[trace] step_events={len(step_events)}")
         for evt in step_events:
             print(
-                "[step %s] node=%s agent=%s next=%s reason=%s"
-                % (
-                    evt.get("step_number"),
-                    evt.get("node_name"),
-                    evt.get("agent_id"),
-                    evt.get("next_node"),
-                    evt.get("supervisor_reason"),
-                )
+                f"[step {evt.get('step_number')}] "
+                f"node={evt.get('node_name')} "
+                f"agent={evt.get('agent_id')} "
+                f"next={evt.get('next_node')} "
+                f"reason={evt.get('supervisor_reason')}"
             )
             tool_outputs = evt.get("tool_outputs")
             if isinstance(tool_outputs, list) and tool_outputs:
@@ -180,8 +177,9 @@ async def _run_turn(
     print(f"\nassistant> {text}\n")
     if show_metadata:
         print(
-            "[meta] success=%s type=%s latency_ms=%s"
-            % (result.get("success"), result.get("type"), latency_ms)
+            f"[meta] success={result.get('success')} "
+            f"type={result.get('type')} "
+            f"latency_ms={latency_ms}"
         )
     if trace:
         _print_trace(result, events)

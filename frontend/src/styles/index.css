@@ -99,15 +99,42 @@ code {
 .session-item {
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.7);
-  padding: 10px;
   border-radius: 12px;
-  text-align: left;
-  cursor: pointer;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  overflow: hidden;
 }
 
 .session-item.active {
   border-color: var(--accent);
   background: rgba(184, 94, 45, 0.12);
+}
+
+.session-select {
+  background: transparent !important;
+  color: var(--ink-0) !important;
+  border-radius: 0 !important;
+  padding: 10px !important;
+  text-align: left;
+  min-width: 0;
+}
+
+.session-delete {
+  background: transparent !important;
+  color: var(--danger) !important;
+  border-left: 1px solid var(--line) !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  width: 34px;
+}
+
+.session-delete:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.session-delete:not(:disabled):hover {
+  background: rgba(162, 30, 52, 0.1) !important;
 }
 
 .session-title {

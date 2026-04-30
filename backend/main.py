@@ -14,13 +14,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from src.interfaces.api.routes import admin, chat, health
+from src.interfaces.api.routes import admin, chat, health, sessions
 from src.interfaces.api.service import (
     reload_runtime_config,
     validate_timeout_hierarchy_or_raise,
     warn_timeout_misconfiguration_once,
 )
 from src.infrastructure.memory.stm import drain_ltm_tasks
+from src.infrastructure.observability.langfuse_observability import shutdown_langfuse
 from src.infrastructure.tools.loader import initialize_tools
 
 logging.basicConfig(level=logging.INFO)
@@ -109,6 +110,7 @@ async def lifespan(app: FastAPI):
                 )
         except Exception as exc:
             logger.exception("Failed to drain LTM background tasks on shutdown: %s", exc)
+        shutdown_langfuse()
         if _DEFAULT_EXECUTOR is not None:
             _DEFAULT_EXECUTOR.shutdown(wait=False, cancel_futures=True)
             _DEFAULT_EXECUTOR = None
@@ -163,6 +165,7 @@ async def request_observability_middleware(request, call_next):
 
 app.include_router(chat.router)
 app.include_router(health.router)
+app.include_router(sessions.router)
 app.include_router(admin.router)
 
 if FRONTEND_DIST_DIR.exists():

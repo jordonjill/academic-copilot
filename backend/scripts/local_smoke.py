@@ -16,7 +16,7 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from src.interfaces.api.service import (
+from src.interfaces.api.service import (  # noqa: E402
     create_copilot,
     get_config_registry,
     reload_runtime_config,
@@ -43,12 +43,10 @@ def check_runtime_config() -> bool:
     loaded = report.get("loaded", {})
     print(f"config_version={report.get('config_version')}")
     print(
-        "loaded: llms=%s agents=%s workflows=%s"
-        % (
-            len(loaded.get("llms", [])),
-            len(loaded.get("agents", [])),
-            len(loaded.get("workflows", [])),
-        )
+        "loaded: "
+        f"llms={len(loaded.get('llms', []))} "
+        f"agents={len(loaded.get('agents', []))} "
+        f"workflows={len(loaded.get('workflows', []))}"
     )
     if failed:
         print(f"failed_count={len(failed)}")
@@ -65,11 +63,8 @@ async def check_tools_reload() -> bool:
     failed = report.get("failed", [])
     print(f"version={report.get('version')}")
     print(
-        "loaded_tools=%s loaded_servers=%s"
-        % (
-            len(report.get("loaded_tools", [])),
-            len(report.get("loaded_servers", [])),
-        )
+        f"loaded_tools={len(report.get('loaded_tools', []))} "
+        f"loaded_servers={len(report.get('loaded_servers', []))}"
     )
     if failed:
         print(f"failed_count={len(failed)}")

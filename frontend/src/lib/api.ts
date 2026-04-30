@@ -105,6 +105,12 @@ export async function postChat(payload: ChatRequest): Promise<ChatResponseNormal
   return normalizeChatResult(raw, payload.session_id);
 }
 
+export async function deleteSession(sessionId: string): Promise<void> {
+  await fetchJson<{ success: boolean; message: string }>(`/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "DELETE",
+  });
+}
+
 export async function streamChat(
   payload: ChatRequest,
   callbacks?: StreamCallbacks,

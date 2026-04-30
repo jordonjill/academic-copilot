@@ -35,6 +35,7 @@ from src.infrastructure.config.config import (
     USERS_DIR,
 )
 from src.infrastructure.config.prompt import LTM_EXTRACTION_PROMPT
+from src.infrastructure.observability.langfuse_observability import build_langchain_config
 
 
 logger = logging.getLogger(__name__)
@@ -234,7 +235,21 @@ async def extract_and_update_ltm(
         # 在线程池中运行同步 LLM 调用
         def _call_llm():
             chain = LTM_EXTRACTION_PROMPT | llm
-            response = chain.invoke({"conversation_backbone": backbone_text})
+            config = build_langchain_config(
+                {
+                    "run_name": "memory.ltm_extraction",
+                    "metadata": {
+                        "memory_stage": "ltm_extraction",
+                        "session_id": session_id,
+                        "user_id": user_id,
+                    },
+                    "tags": ["memory", "ltm"],
+                }
+            )
+            try:
+                response = chain.invoke({"conversation_backbone": backbone_text}, config=config)
+            except TypeError:
+                response = chain.invoke({"conversation_backbone": backbone_text})
             return response.content if hasattr(response, "content") else str(response)
 
         raw_json = await loop.run_in_executor(_LTM_EXECUTOR, _call_llm)
