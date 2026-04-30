@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 
 import pytest
 from langchain_core.messages import AIMessage, SystemMessage
@@ -90,6 +91,71 @@ def test_chat_async_keeps_last_states_per_session(monkeypatch):
     assert state_2 is not None
     assert state_1["input"]["user_text"] == "first"
     assert state_2["input"]["user_text"] == "second"
+
+
+def test_chat_async_attaches_token_usage_to_returned_runtime(monkeypatch):
+    token_usage = {
+        "calls": 1,
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "total_tokens": 15,
+    }
+    captured: dict = {}
+
+    class _FakeMemory:
+        def load_context(self, session_id: str):
+            del session_id
+            return ([], "")
+
+        def persist_turn(self, state, llm):
+            del state, llm
+            return {"stm_compressed": False}
+
+    class _FakeObservation:
+        def token_usage(self):
+            return token_usage
+
+        def update_output(self, output):
+            captured["langfuse_output"] = output
+
+        def update_error(self, error):
+            captured["error"] = error
+
+    @contextlib.contextmanager
+    def _fake_observe_chat_turn(**kwargs):
+        captured["observe_kwargs"] = kwargs
+        yield _FakeObservation()
+
+    monkeypatch.setattr("src.interfaces.api.service.MemoryAdapter", lambda: _FakeMemory())
+    monkeypatch.setattr("src.interfaces.api.service.observe_chat_turn", _fake_observe_chat_turn)
+    app = AcademicCopilotApp()
+
+    async def _fake_run_turn_async(state, requested_workflow_id=None, step_callback=None):
+        del requested_workflow_id, step_callback
+        state["output"]["final_text"] = "ok"
+        return {
+            "success": True,
+            "type": "chat",
+            "message": "ok",
+            "data": {
+                "runtime": {
+                    "mode": "dynamic",
+                    "workflow_id": None,
+                    "step_count": 0,
+                    "loop_count": 0,
+                    "status": "completed",
+                },
+                "outputs": {},
+            },
+        }
+
+    monkeypatch.setattr(app.runtime, "run_turn_async", _fake_run_turn_async)
+    monkeypatch.setattr(app.runtime, "resolve_default_llm", lambda: object())
+
+    result = asyncio.run(app.chat_async(user_message="current question", session_id="s-token"))
+
+    assert result["data"]["runtime"]["token_usage"] == token_usage
+    assert captured["langfuse_output"]["data"]["runtime"]["token_usage"] == token_usage
 
 
 def test_chat_async_persists_memory_on_runtime_failure(monkeypatch):

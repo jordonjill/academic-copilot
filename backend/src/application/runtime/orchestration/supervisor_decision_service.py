@@ -9,7 +9,12 @@ from langchain_core.messages import AIMessage
 from src.application.runtime.contracts.io_models import SupervisorDecision
 from src.application.runtime.contracts.spec_models import AgentSpec
 from src.application.runtime.contracts.state_types import RuntimeState
-from src.infrastructure.observability.langfuse_observability import build_langchain_config
+from src.infrastructure.observability.langfuse_observability import (
+    OP_SUPERVISOR_DECIDE,
+    OP_SUPERVISOR_FINALIZE,
+    build_langchain_config,
+    operation_metadata,
+)
 
 _SUPERVISOR_ACTION_MAP = {
     "run_subagent": "run_agent",
@@ -426,14 +431,17 @@ class SupervisorDecisionService:
         workflow_completed: bool,
     ) -> dict[str, Any]:
         phase = "finalize" if workflow_completed else "decide"
+        operation = OP_SUPERVISOR_FINALIZE if workflow_completed else OP_SUPERVISOR_DECIDE
         return {
-            "run_name": f"supervisor.{phase}",
-            "metadata": {
-                "agent_id": supervisor_spec.id,
-                "agent_mode": supervisor_spec.mode,
-                "requested_workflow_id": requested_workflow_id,
-                "workflow_completed": workflow_completed,
-            },
+            "run_name": operation,
+            "metadata": operation_metadata(
+                operation,
+                operation_type="supervisor",
+                agent_id=supervisor_spec.id,
+                agent_mode=supervisor_spec.mode,
+                requested_workflow_id=requested_workflow_id,
+                workflow_completed=workflow_completed,
+            ),
             "tags": ["supervisor", f"agent:{supervisor_spec.id}", f"phase:{phase}"],
         }
 

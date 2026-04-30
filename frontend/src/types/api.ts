@@ -12,7 +12,9 @@ export type RuntimeInfo = {
   workflow_id: string | null;
   current_node: string | null;
   step_count: number;
+  max_steps?: number;
   loop_count: number;
+  max_loops?: number;
   status: string;
   token_usage?: {
     calls: number;
@@ -45,7 +47,7 @@ export type ReportExports = {
   pdf_path?: string;
 };
 
-export type ChatArtifacts = {
+export type PublicOutputs = {
   report_exports?: ReportExports;
   [key: string]: unknown;
 };
@@ -58,10 +60,10 @@ export type ChatResponseRaw = {
   timestamp?: string;
   data?: {
     runtime?: RuntimeInfo;
-    artifacts?: ChatArtifacts;
+    outputs?: PublicOutputs;
   } | Record<string, unknown> | null;
   runtime?: RuntimeInfo;
-  artifacts_keys?: string[];
+  outputs_keys?: string[];
 };
 
 export type ChatResponseNormalized = {
@@ -70,8 +72,8 @@ export type ChatResponseNormalized = {
   sessionId: string;
   timestamp?: string;
   runtime?: RuntimeInfo;
-  artifacts?: ChatArtifacts;
-  artifactsKeys: string[];
+  outputs?: PublicOutputs;
+  outputKeys: string[];
 };
 
 export type ChatMessage = {
@@ -80,7 +82,7 @@ export type ChatMessage = {
   text: string;
   timestamp: string;
   runtime?: RuntimeInfo;
-  artifacts?: ChatArtifacts;
-  artifactsKeys?: string[];
+  outputs?: PublicOutputs;
+  outputKeys?: string[];
   isError?: boolean;
 };

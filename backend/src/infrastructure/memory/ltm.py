@@ -35,7 +35,11 @@ from src.infrastructure.config.config import (
     USERS_DIR,
 )
 from src.infrastructure.config.prompt import LTM_EXTRACTION_PROMPT
-from src.infrastructure.observability.langfuse_observability import build_langchain_config
+from src.infrastructure.observability.langfuse_observability import (
+    OP_MEMORY_LTM_EXTRACTION,
+    build_langchain_config,
+    operation_metadata,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -237,12 +241,14 @@ async def extract_and_update_ltm(
             chain = LTM_EXTRACTION_PROMPT | llm
             config = build_langchain_config(
                 {
-                    "run_name": "memory.ltm_extraction",
-                    "metadata": {
-                        "memory_stage": "ltm_extraction",
-                        "session_id": session_id,
-                        "user_id": user_id,
-                    },
+                    "run_name": OP_MEMORY_LTM_EXTRACTION,
+                    "metadata": operation_metadata(
+                        OP_MEMORY_LTM_EXTRACTION,
+                        operation_type="memory",
+                        memory_stage="ltm_extraction",
+                        session_id=session_id,
+                        user_id=user_id,
+                    ),
                     "tags": ["memory", "ltm"],
                 }
             )

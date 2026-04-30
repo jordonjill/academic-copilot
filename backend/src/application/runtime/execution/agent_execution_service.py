@@ -8,6 +8,11 @@ from langchain_core.messages import AIMessage
 from src.application.runtime.contracts.spec_models import AgentSpec
 from src.application.runtime.contracts.state_types import RuntimeState
 from src.application.runtime.providers.context_facility import ContextFacility
+from src.infrastructure.observability.langfuse_observability import (
+    OP_AGENT_CHAIN,
+    OP_AGENT_REACT,
+    operation_metadata,
+)
 
 
 class AgentExecutionService:
@@ -245,6 +250,8 @@ class AgentExecutionService:
 
         metadata = dict(merged.get("metadata") or {})
         metadata.setdefault("agent_mode", "react")
+        metadata.setdefault("operation", OP_AGENT_REACT)
+        metadata.setdefault("operation_type", "agent")
         merged["metadata"] = metadata
 
         tags: list[str] = []
@@ -264,13 +271,16 @@ class AgentExecutionService:
         agent_id: str,
         mode: str,
     ) -> dict[str, Any]:
+        operation = OP_AGENT_REACT if mode == "react" else OP_AGENT_CHAIN
         return {
             "run_name": f"agent.{agent_id}",
-            "metadata": {
-                "node_name": node_name,
-                "agent_id": agent_id,
-                "agent_mode": mode,
-            },
+            "metadata": operation_metadata(
+                operation,
+                operation_type="agent",
+                node_name=node_name,
+                agent_id=agent_id,
+                agent_mode=mode,
+            ),
             "tags": ["agent", f"agent:{agent_id}", f"mode:{mode}"],
         }
 

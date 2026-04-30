@@ -1,9 +1,23 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any, Dict, Optional
 
 from src.application.runtime.contracts.state_types import RuntimeState
+
+
+_PUBLIC_RUNTIME_KEYS = (
+    "mode",
+    "workflow_id",
+    "current_node",
+    "step_count",
+    "max_steps",
+    "loop_count",
+    "max_loops",
+    "status",
+    "token_usage",
+)
 
 
 class RuntimeResultService:
@@ -100,6 +114,28 @@ class RuntimeResultService:
                     return output_text
         return None
 
+    def public_runtime(self, state: RuntimeState) -> dict[str, Any]:
+        raw_runtime = state.get("runtime", {})
+        if not isinstance(raw_runtime, Mapping):
+            raw_runtime = {}
+
+        runtime = {key: raw_runtime.get(key) for key in _PUBLIC_RUNTIME_KEYS if key in raw_runtime}
+        budget = self._public_tool_budget(raw_runtime.get("tool_budget"))
+        if budget:
+            runtime["tool_budget"] = budget
+        return runtime
+
+    def public_outputs(self, state: RuntimeState) -> dict[str, Any]:
+        artifacts = state.get("artifacts", {})
+        if not isinstance(artifacts, Mapping):
+            return {}
+
+        outputs: dict[str, Any] = {}
+        report_exports = self._find_report_exports(artifacts)
+        if report_exports:
+            outputs["report_exports"] = report_exports
+        return outputs
+
     def build_result(self, state: RuntimeState) -> Dict[str, Any]:
         final_structured = state["output"].get("final_structured")
         if isinstance(final_structured, dict):
@@ -119,7 +155,57 @@ class RuntimeResultService:
             "type": "chat",
             "message": final_text or "No output produced.",
             "data": {
-                "runtime": state.get("runtime", {}),
-                "artifacts": state.get("artifacts", {}),
+                "runtime": self.public_runtime(state),
+                "outputs": self.public_outputs(state),
             },
         }
+
+    @staticmethod
+    def _public_tool_budget(value: Any) -> dict[str, Any]:
+        if not isinstance(value, Mapping):
+            return {}
+
+        limits = value.get("limits")
+        counts = value.get("counts")
+        public: dict[str, Any] = {
+            "scope": value.get("scope"),
+            "workflow_id": value.get("workflow_id"),
+            "limits": dict(limits) if isinstance(limits, Mapping) else {},
+            "counts": dict(counts) if isinstance(counts, Mapping) else {},
+        }
+        return public
+
+    @classmethod
+    def _find_report_exports(cls, artifacts: Mapping[str, Any]) -> dict[str, str]:
+        direct = artifacts.get("report_exports")
+        if isinstance(direct, Mapping):
+            return cls._coerce_report_exports(direct)
+
+        shared = artifacts.get("shared")
+        if not isinstance(shared, Mapping):
+            return {}
+
+        for value in shared.values():
+            if not isinstance(value, Mapping):
+                continue
+            parsed = value.get("parsed")
+            if not isinstance(parsed, Mapping):
+                continue
+            parsed_artifacts = parsed.get("artifacts")
+            if not isinstance(parsed_artifacts, Mapping):
+                continue
+            report_exports = parsed_artifacts.get("report_exports")
+            if isinstance(report_exports, Mapping):
+                coerced = cls._coerce_report_exports(report_exports)
+                if coerced:
+                    return coerced
+        return {}
+
+    @staticmethod
+    def _coerce_report_exports(value: Mapping[str, Any]) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for key in ("docx_path", "pdf_path"):
+            path = value.get(key)
+            if isinstance(path, str) and path.strip():
+                result[key] = path
+        return result

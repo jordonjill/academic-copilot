@@ -251,7 +251,7 @@ class AcademicCopilotApp:
                 next_node=step.get("next_node"),
             )
             if websocket_send:
-                await websocket_send(self._build_step_event(step))
+                await websocket_send(self._build_step_event(step, state))
 
         async def _capture_runtime_event(payload: Dict[str, Any]) -> None:
             if websocket_send:
@@ -335,9 +335,13 @@ class AcademicCopilotApp:
                 _attach_token_usage(state, observation.token_usage())
                 raise
 
-            _attach_token_usage(state, observation.token_usage())
+            token_usage = observation.token_usage()
+            _attach_token_usage(state, token_usage)
+            _attach_token_usage_to_result(result, token_usage)
             await _persist_memory_best_effort()
-            _attach_token_usage(state, observation.token_usage())
+            token_usage = observation.token_usage()
+            _attach_token_usage(state, token_usage)
+            _attach_token_usage_to_result(result, token_usage)
             observation.update_output(result)
 
         self._remember_state(sid, state)
@@ -461,17 +465,22 @@ class AcademicCopilotApp:
         }
 
     @staticmethod
-    def _build_step_event(step: Dict[str, Any]) -> Dict[str, Any]:
-        return {
+    def _build_step_event(step: Dict[str, Any], state: RuntimeState) -> Dict[str, Any]:
+        runtime = state.get("runtime", {})
+        event = {
             "type": "step",
             "step_number": step.get("step_number"),
             "node_name": step.get("node_name"),
             "agent_id": step.get("agent_id"),
             "next_node": step.get("next_node"),
             "supervisor_reason": step.get("supervisor_reason"),
-            "tool_outputs": step.get("tool_outputs", []),
             "timestamp": _ts(),
         }
+        if isinstance(runtime, dict):
+            for key in ("max_steps", "loop_count", "max_loops", "status"):
+                if key in runtime:
+                    event[key] = runtime[key]
+        return event
 
 
 # ── 工厂函数 ─────────────────────────────────────────────────────────────────
@@ -506,6 +515,24 @@ def _attach_token_usage(state: RuntimeState, token_usage: dict[str, Any]) -> Non
     runtime_state = state.get("runtime")
     if isinstance(runtime_state, dict):
         runtime_state["token_usage"] = token_usage
+
+
+def _attach_token_usage_to_result(result: dict[str, Any], token_usage: dict[str, Any]) -> None:
+    if not token_usage or not isinstance(result, dict):
+        return
+    data = result.get("data")
+    if not isinstance(data, dict):
+        if result.get("type") != "chat":
+            return
+        data = {}
+        result["data"] = data
+    if "runtime" not in data and result.get("type") != "chat":
+        return
+    runtime = data.get("runtime")
+    if not isinstance(runtime, dict):
+        runtime = {}
+        data["runtime"] = runtime
+    runtime["token_usage"] = token_usage
 
 
 def _log_event(event: str, **fields: Any) -> None:

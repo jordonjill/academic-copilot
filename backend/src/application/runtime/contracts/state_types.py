@@ -21,9 +21,12 @@ class RuntimeMetaState(TypedDict):
     workflow_id: Optional[str]
     current_node: Optional[str]
     step_count: int
+    max_steps: NotRequired[int]
     loop_count: int
+    max_loops: NotRequired[int]
     status: str
     token_usage: NotRequired[dict[str, Any]]
+    tool_budget: NotRequired[dict[str, Any]]
 
 
 class RuntimeIOState(TypedDict):

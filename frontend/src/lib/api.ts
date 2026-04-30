@@ -1,4 +1,4 @@
-import type { ChatArtifacts, ChatRequest, ChatResponseNormalized, ChatResponseRaw } from "../types/api";
+import type { ChatRequest, ChatResponseNormalized, ChatResponseRaw, PublicOutputs, ReportExports } from "../types/api";
 import { buildDefaultHeaders, fetchJson, getApiSettings, HttpError } from "./http";
 
 export type ChatStreamEvent = {
@@ -16,23 +16,48 @@ export type StreamCallbacks = {
   onCompletion?: (response: ChatResponseNormalized, event: ChatStreamEvent) => void;
 };
 
-function normalizeArtifacts(data: ChatResponseRaw["data"] | undefined): ChatArtifacts | undefined {
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
+}
+
+function coerceReportExports(value: unknown): ReportExports | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const exports: ReportExports = {};
+  if (typeof record.docx_path === "string" && record.docx_path.trim()) {
+    exports.docx_path = record.docx_path;
+  }
+  if (typeof record.pdf_path === "string" && record.pdf_path.trim()) {
+    exports.pdf_path = record.pdf_path;
+  }
+  return Object.keys(exports).length > 0 ? exports : undefined;
+}
+
+function normalizeOutputs(data: ChatResponseRaw["data"] | undefined): PublicOutputs | undefined {
   if (!data || typeof data !== "object") {
     return undefined;
   }
-  const maybeArtifacts = (data as { artifacts?: unknown }).artifacts;
-  if (maybeArtifacts && typeof maybeArtifacts === "object") {
-    return maybeArtifacts as ChatArtifacts;
+  const maybeOutputs = asRecord((data as { outputs?: unknown }).outputs);
+  if (maybeOutputs) {
+    return maybeOutputs as PublicOutputs;
+  }
+
+  const legacyArtifacts = asRecord((data as { artifacts?: unknown }).artifacts);
+  const reportExports = coerceReportExports(legacyArtifacts?.report_exports);
+  if (reportExports) {
+    return { report_exports: reportExports };
   }
   return undefined;
 }
 
-function collectArtifactKeys(artifacts: ChatArtifacts | undefined, raw: ChatResponseRaw): string[] {
-  if (Array.isArray(raw.artifacts_keys)) {
-    return raw.artifacts_keys.filter((x): x is string => typeof x === "string");
+function collectOutputKeys(outputs: PublicOutputs | undefined, raw: ChatResponseRaw): string[] {
+  if (Array.isArray(raw.outputs_keys)) {
+    return raw.outputs_keys.filter((x): x is string => typeof x === "string");
   }
-  if (artifacts && typeof artifacts === "object") {
-    return Object.keys(artifacts);
+  if (outputs && typeof outputs === "object") {
+    return Object.keys(outputs);
   }
   return [];
 }
@@ -42,7 +67,7 @@ function normalizeChatResult(raw: ChatResponseRaw, fallbackSessionId: string): C
     raw.data && typeof raw.data === "object"
       ? (raw.data as { runtime?: ChatResponseNormalized["runtime"] }).runtime
       : undefined;
-  const artifacts = normalizeArtifacts(raw.data);
+  const outputs = normalizeOutputs(raw.data);
 
   return {
     success: Boolean(raw.success),
@@ -50,8 +75,8 @@ function normalizeChatResult(raw: ChatResponseRaw, fallbackSessionId: string): C
     sessionId: typeof raw.session_id === "string" ? raw.session_id : fallbackSessionId,
     timestamp: typeof raw.timestamp === "string" ? raw.timestamp : new Date().toISOString(),
     runtime: raw.runtime ?? runtimeFromData,
-    artifacts,
-    artifactsKeys: collectArtifactKeys(artifacts, raw)
+    outputs,
+    outputKeys: collectOutputKeys(outputs, raw)
   };
 }
 

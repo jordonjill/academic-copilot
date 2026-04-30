@@ -193,8 +193,8 @@ Conversation persistence details:
 - SQLite database defaults to `data/conversations.db` (configurable by `CONVERSATION_DB`).
 - `messages` / `raw_messages` persist the conversation backbone (`HumanMessage` / `AIMessage` text).
 - Subagent/workflow final returned text is appended into supervisor conversation messages and therefore persisted.
-- Supervisor internal decision JSON is not persisted as a standalone DB field; it only affects orchestration and resulting messages/artifacts.
-- Workflow internal per-node transient state is isolated during execution; persisted conversation stores the returned output text, while detailed runtime traces live in in-memory/artifact payloads for the turn.
+- Supervisor internal decision JSON is not persisted as a standalone DB field; it only affects orchestration and resulting messages/internal artifacts.
+- Workflow internal per-node transient state is isolated during execution; persisted conversation stores the returned output text. The chat API only exposes public runtime metadata and whitelisted outputs such as report export paths.
 
 ## Troubleshooting
 

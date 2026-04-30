@@ -1,50 +1,26 @@
-import type { ChatArtifacts, ReportExports } from "../../types/api";
+import type { PublicOutputs, ReportExports } from "../../types/api";
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
 }
 
-function findReportExports(artifacts?: ChatArtifacts): ReportExports | undefined {
-  if (!artifacts) {
+function findReportExports(outputs?: PublicOutputs): ReportExports | undefined {
+  if (!outputs) {
     return undefined;
   }
-  const direct = asRecord(artifacts.report_exports);
+  const direct = asRecord(outputs.report_exports);
   if (direct) {
     return direct as ReportExports;
   }
-
-  const shared = asRecord(artifacts.shared);
-  if (!shared) {
-    return undefined;
-  }
-
-  const reporter = asRecord(shared.report_exporter);
-  const parsed = asRecord(reporter?.parsed);
-  const parsedArtifacts = asRecord(parsed?.artifacts);
-  const fromReporter = asRecord(parsedArtifacts?.report_exports);
-  if (fromReporter) {
-    return fromReporter as ReportExports;
-  }
-
-  for (const item of Object.values(shared)) {
-    const record = asRecord(item);
-    const p = asRecord(record?.parsed);
-    const pa = asRecord(p?.artifacts);
-    const re = asRecord(pa?.report_exports);
-    if (re) {
-      return re as ReportExports;
-    }
-  }
-
   return undefined;
 }
 
 type Props = {
-  artifacts?: ChatArtifacts;
+  outputs?: PublicOutputs;
 };
 
-export function ExportPanel({ artifacts }: Props) {
-  const exports = findReportExports(artifacts);
+export function ExportPanel({ outputs }: Props) {
+  const exports = findReportExports(outputs);
 
   return (
     <section className="panel export-panel">

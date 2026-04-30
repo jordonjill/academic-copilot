@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import re
@@ -42,6 +43,14 @@ _CURRENT_TAGS: ContextVar[tuple[str, ...]] = ContextVar(
 _LANGFUSE_CLIENT: Any | None = None
 _LANGFUSE_CLIENT_LOCK = threading.Lock()
 _WARNED_MESSAGES: set[str] = set()
+OP_CHAT_TURN = "chat.turn"
+OP_SUPERVISOR_DECIDE = "supervisor.decide"
+OP_SUPERVISOR_FINALIZE = "supervisor.finalize"
+OP_AGENT_CHAIN = "agent.chain"
+OP_AGENT_REACT = "agent.react"
+OP_MEMORY_STM_COMPRESSION = "memory.stm_compression"
+OP_MEMORY_LTM_EXTRACTION = "memory.ltm_extraction"
+_LANGFUSE_METADATA_VALUE_MAX_CHARS = 200
 
 
 def _warn_once(key: str, message: str, *args: Any) -> None:
@@ -119,6 +128,52 @@ def mask_data(data: Any, **_: Any) -> Any:
     return data
 
 
+def langfuse_metadata(metadata: Mapping[str, Any] | None = None) -> dict[str, str]:
+    """Return metadata safe for Langfuse v4 propagated attributes."""
+    if not isinstance(metadata, Mapping):
+        return {}
+
+    result: dict[str, str] = {}
+    for raw_key, raw_value in metadata.items():
+        key = str(raw_key).strip()
+        if not key:
+            continue
+        result[key] = _coerce_langfuse_metadata_value(raw_value)
+    return result
+
+
+def operation_metadata(
+    operation: str,
+    *,
+    operation_type: str,
+    **metadata: Any,
+) -> dict[str, str]:
+    return langfuse_metadata(
+        {
+            "operation": operation,
+            "operation_type": operation_type,
+            **metadata,
+        }
+    )
+
+
+def _coerce_langfuse_metadata_value(value: Any) -> str:
+    if value is None:
+        text = "none"
+    elif isinstance(value, bool):
+        text = "true" if value else "false"
+    elif isinstance(value, (str, int, float)):
+        text = str(value)
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, default=str, sort_keys=True)
+        except Exception:
+            text = str(value)
+    if len(text) > _LANGFUSE_METADATA_VALUE_MAX_CHARS:
+        return text[: _LANGFUSE_METADATA_VALUE_MAX_CHARS - 14] + "...<truncated>"
+    return text
+
+
 def _get_langfuse_client() -> Any | None:
     if not langfuse_enabled():
         return None
@@ -189,6 +244,7 @@ def _propagate_langfuse_attributes(
     session_id: str,
     trace_name: str,
     tags: list[str],
+    metadata: Mapping[str, Any] | None = None,
 ) -> Iterator[None]:
     if not langfuse_enabled() or not _langfuse_configured():
         yield
@@ -204,6 +260,7 @@ def _propagate_langfuse_attributes(
             session_id=session_id,
             trace_name=trace_name,
             tags=tags,
+            metadata=langfuse_metadata(metadata),
         ):
             yield
     except TypeError:
@@ -271,7 +328,7 @@ def build_langchain_config(
     if metadata:
         merged_metadata.update(metadata)
     if merged_metadata:
-        merged["metadata"] = merged_metadata
+        merged["metadata"] = langfuse_metadata(merged_metadata)
 
     existing_tags = merged.get("tags")
     merged_tags: list[str] = []
@@ -652,14 +709,18 @@ def observe_chat_turn(
     else:
         tags.append("mode:dynamic")
 
-    metadata = {
-        "langfuse_user_id": user_id,
-        "langfuse_session_id": session_id,
-        "langfuse_tags": list(tags),
-        "app": "academic-copilot",
-        "workflow_id": workflow_id,
-        "message_chars": len(user_message),
-    }
+    turn_id = uuid.uuid4().hex
+    metadata = operation_metadata(
+        OP_CHAT_TURN,
+        operation_type="turn",
+        app="academic-copilot",
+        turn_id=turn_id,
+        user_id=user_id,
+        session_id=session_id,
+        tags=",".join(tags),
+        workflow_id=workflow_id or "none",
+        message_chars=len(user_message),
+    )
 
     callbacks: list[Any] = []
     collector: TokenUsageCollector | None = None
@@ -675,19 +736,38 @@ def observe_chat_turn(
     span_cm: contextlib.AbstractContextManager[Any]
     if client is not None and hasattr(client, "start_as_current_observation"):
         input_payload: Any = {"message": user_message, "workflow_id": workflow_id}
+        trace_context: dict[str, str] | None = None
+        create_trace_id = getattr(client, "create_trace_id", None)
+        if callable(create_trace_id):
+            try:
+                trace_context = {"trace_id": create_trace_id(seed=f"{session_id}:{turn_id}")}
+            except Exception:
+                trace_context = None
+
+        span_kwargs: dict[str, Any] = {
+            "as_type": "span",
+            "name": OP_CHAT_TURN,
+            "input": input_payload,
+            "metadata": metadata,
+        }
+        if trace_context:
+            span_kwargs["trace_context"] = trace_context
         try:
-            span_cm = client.start_as_current_observation(
-                as_type="span",
-                name="chat.turn",
-                input=input_payload,
-                metadata=metadata,
-            )
+            span_cm = client.start_as_current_observation(**span_kwargs)
         except TypeError:
-            span_cm = client.start_as_current_observation(
-                as_type="span",
-                name="chat.turn",
-                input=input_payload,
-            )
+            try:
+                span_cm = client.start_as_current_observation(
+                    as_type="span",
+                    name=OP_CHAT_TURN,
+                    input=input_payload,
+                    metadata=metadata,
+                )
+            except TypeError:
+                span_cm = client.start_as_current_observation(
+                    as_type="span",
+                    name=OP_CHAT_TURN,
+                    input=input_payload,
+                )
     else:
         span_cm = contextlib.nullcontext(None)
 
@@ -695,8 +775,9 @@ def observe_chat_turn(
         with _propagate_langfuse_attributes(
             user_id=user_id,
             session_id=session_id,
-            trace_name="academic-copilot.chat_turn",
+            trace_name=OP_CHAT_TURN,
             tags=tags,
+            metadata=metadata,
         ):
             with langchain_observation_context(
                 callbacks=callbacks,

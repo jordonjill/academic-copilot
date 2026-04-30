@@ -87,6 +87,7 @@ class SupervisorOrchestrator:
             "SUPERVISOR_MAX_WALL_TIME_SECONDS",
             self._default_wall_timeout_seconds,
         )
+        state["runtime"]["max_steps"] = max_steps
         started = perf_counter()
         subagent_call_counts: dict[str, int] = {}
         workflow_calls_used = 0
@@ -284,6 +285,7 @@ class SupervisorOrchestrator:
             "SUPERVISOR_MAX_WALL_TIME_SECONDS",
             self._default_wall_timeout_seconds,
         )
+        state["runtime"]["max_steps"] = max_steps
         started = perf_counter()
         subagent_call_counts: dict[str, int] = {}
         workflow_calls_used = 0

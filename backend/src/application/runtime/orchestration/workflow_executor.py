@@ -42,6 +42,9 @@ class WorkflowExecutor:
         state["runtime"]["mode"] = "workflow"
         state["runtime"]["workflow_id"] = workflow_id
         spec = self._registry.workflows[workflow_id]
+        max_steps = spec.resolved_max_steps()
+        state["runtime"]["max_steps"] = max_steps
+        state["runtime"]["max_loops"] = spec.resolved_max_loops(max_steps=max_steps)
         runtime = WorkflowRuntime(spec, agent_runner=None)
         tool_budget = self._tool_budget.ensure_workflow_tool_budget(state, workflow_id)
 
@@ -151,6 +154,9 @@ class WorkflowExecutor:
         state["runtime"]["mode"] = "workflow"
         state["runtime"]["workflow_id"] = workflow_id
         spec = self._registry.workflows[workflow_id]
+        max_steps = spec.resolved_max_steps()
+        state["runtime"]["max_steps"] = max_steps
+        state["runtime"]["max_loops"] = spec.resolved_max_loops(max_steps=max_steps)
         runtime = WorkflowRuntime(spec, agent_runner=None)
         tool_budget = self._tool_budget.ensure_workflow_tool_budget(state, workflow_id)
 

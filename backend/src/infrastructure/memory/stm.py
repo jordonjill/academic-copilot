@@ -40,7 +40,11 @@ from src.infrastructure.config.config import (
 )
 from src.infrastructure.config.prompt import STM_COMPRESSION_PROMPT
 from src.infrastructure.memory.sqlite_store import SQLiteStore
-from src.infrastructure.observability.langfuse_observability import build_langchain_config
+from src.infrastructure.observability.langfuse_observability import (
+    OP_MEMORY_STM_COMPRESSION,
+    build_langchain_config,
+    operation_metadata,
+)
 
 COMPRESSION_SUMMARY_VERSION = "stm-v1"
 logger = logging.getLogger(__name__)
@@ -306,12 +310,14 @@ def stm_compression_node(
                 compression_chain = STM_COMPRESSION_PROMPT | llm
                 compression_config = build_langchain_config(
                     {
-                        "run_name": "memory.stm_compression",
-                        "metadata": {
-                            "memory_stage": "stm_compression",
-                            "session_id": session_id,
-                            "user_id": user_id,
-                        },
+                        "run_name": OP_MEMORY_STM_COMPRESSION,
+                        "metadata": operation_metadata(
+                            OP_MEMORY_STM_COMPRESSION,
+                            operation_type="memory",
+                            memory_stage="stm_compression",
+                            session_id=session_id,
+                            user_id=user_id,
+                        ),
                         "tags": ["memory", "stm"],
                     }
                 )

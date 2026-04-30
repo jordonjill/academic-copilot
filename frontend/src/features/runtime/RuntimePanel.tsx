@@ -29,10 +29,16 @@ export function RuntimePanel({ runtime }: Props) {
         <dd>{runtime.status}</dd>
         <dt>node</dt>
         <dd>{runtime.current_node ?? "(none)"}</dd>
-        <dt>step_count</dt>
-        <dd>{runtime.step_count}</dd>
-        <dt>loop_count</dt>
-        <dd>{runtime.loop_count}</dd>
+        <dt>steps</dt>
+        <dd>
+          {runtime.step_count}
+          {runtime.max_steps ? `/${runtime.max_steps}` : ""}
+        </dd>
+        <dt>loops</dt>
+        <dd>
+          {runtime.loop_count}
+          {runtime.max_loops !== undefined ? `/${runtime.max_loops}` : ""}
+        </dd>
       </dl>
       {tokenUsage ? (
         <div className="budget-block">

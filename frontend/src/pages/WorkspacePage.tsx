@@ -9,15 +9,16 @@ import { loadSessions, newSessionId, saveSessions, type SessionItem } from "../f
 import { WorkflowSelector, type WorkflowMode } from "../features/workflow/WorkflowSelector";
 import { deleteSession, streamChat } from "../lib/api";
 import { HttpError } from "../lib/http";
-import type { ChatArtifacts, ChatMessage, RuntimeInfo, WorkflowId } from "../types/api";
+import type { ChatMessage, PublicOutputs, RuntimeInfo, WorkflowId } from "../types/api";
 
 type MessageBucket = Record<string, ChatMessage[]>;
 type RuntimeBucket = Record<string, RuntimeInfo | undefined>;
-type ArtifactBucket = Record<string, ChatArtifacts | undefined>;
+type OutputBucket = Record<string, PublicOutputs | undefined>;
 type StreamBucket = Record<string, string | undefined>;
 const MESSAGES_KEY = "acp_messages_v1";
 const RUNTIME_KEY = "acp_runtime_v1";
-const ARTIFACTS_KEY = "acp_artifacts_v1";
+const OUTPUTS_KEY = "acp_outputs_v1";
+const LEGACY_ARTIFACTS_KEY = "acp_artifacts_v1";
 
 function loadJsonObject<T>(key: string, fallback: T): T {
   const raw = localStorage.getItem(key);
@@ -47,7 +48,7 @@ export function WorkspacePage() {
   const [activeSessionId, setActiveSessionId] = useState<string>(() => loadSessions()[0]?.id ?? newSessionId());
   const [messagesBySession, setMessagesBySession] = useState<MessageBucket>(() => loadJsonObject(MESSAGES_KEY, {}));
   const [runtimeBySession, setRuntimeBySession] = useState<RuntimeBucket>(() => loadJsonObject(RUNTIME_KEY, {}));
-  const [artifactsBySession, setArtifactsBySession] = useState<ArtifactBucket>(() => loadJsonObject(ARTIFACTS_KEY, {}));
+  const [outputsBySession, setOutputsBySession] = useState<OutputBucket>(() => loadJsonObject(OUTPUTS_KEY, {}));
   const [streamingTextBySession, setStreamingTextBySession] = useState<StreamBucket>({});
   const [pending, setPending] = useState(false);
   const [pendingText, setPendingText] = useState("");
@@ -70,8 +71,12 @@ export function WorkspacePage() {
   }, [runtimeBySession]);
 
   useEffect(() => {
-    localStorage.setItem(ARTIFACTS_KEY, JSON.stringify(artifactsBySession));
-  }, [artifactsBySession]);
+    localStorage.removeItem(LEGACY_ARTIFACTS_KEY);
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(OUTPUTS_KEY, JSON.stringify(outputsBySession));
+  }, [outputsBySession]);
 
   function updateSessions(next: SessionItem[]) {
     setSessions(next);
@@ -105,7 +110,7 @@ export function WorkspacePage() {
   function clearSession(sessionId: string) {
     setMessagesBySession((prev) => ({ ...prev, [sessionId]: [] }));
     setRuntimeBySession((prev) => ({ ...prev, [sessionId]: undefined }));
-    setArtifactsBySession((prev) => ({ ...prev, [sessionId]: undefined }));
+    setOutputsBySession((prev) => ({ ...prev, [sessionId]: undefined }));
     setStreamingTextBySession((prev) => ({ ...prev, [sessionId]: undefined }));
   }
 
@@ -120,7 +125,7 @@ export function WorkspacePage() {
       delete next[sessionId];
       return next;
     });
-    setArtifactsBySession((prev) => {
+    setOutputsBySession((prev) => {
       const next = { ...prev };
       delete next[sessionId];
       return next;
@@ -193,7 +198,21 @@ export function WorkspacePage() {
       return;
     }
     const sid = activeSessionId;
+    const workflowId: WorkflowId | null = workflowMode === "direct" ? null : workflowMode;
     maybeUpdateSessionTitle(sid, text);
+
+    setRuntimeBySession((prev) => ({
+      ...prev,
+      [sid]: {
+        mode: workflowId ? "workflow" : "dynamic",
+        workflow_id: workflowId,
+        current_node: null,
+        step_count: 0,
+        loop_count: 0,
+        status: "running",
+      },
+    }));
+    setOutputsBySession((prev) => ({ ...prev, [sid]: undefined }));
 
     appendMessage(sid, {
       id: `${sid}_u_${Date.now()}`,
@@ -207,7 +226,6 @@ export function WorkspacePage() {
     setStreamingTextBySession((prev) => ({ ...prev, [sid]: "" }));
     try {
       let streamedText = "";
-      const workflowId: WorkflowId | null = workflowMode === "direct" ? null : workflowMode;
       const response = await streamChat(
         {
           message: text,
@@ -240,6 +258,9 @@ export function WorkspacePage() {
                 }),
                 current_node: nodeName || (prev[sid]?.current_node ?? null),
                 step_count: stepNumber > 0 ? stepNumber : prev[sid]?.step_count ?? 0,
+                max_steps: Number(event.max_steps ?? prev[sid]?.max_steps ?? 0) || undefined,
+                loop_count: Number(event.loop_count ?? prev[sid]?.loop_count ?? 0),
+                max_loops: Number(event.max_loops ?? prev[sid]?.max_loops ?? 0) || undefined,
                 status: "running",
               },
             }));
@@ -259,12 +280,14 @@ export function WorkspacePage() {
       );
 
       const runtime = response.runtime;
-      const artifacts = response.artifacts;
+      const outputs = response.outputs;
       if (runtime) {
         setRuntimeBySession((prev) => ({ ...prev, [sid]: runtime }));
       }
-      if (artifacts) {
-        setArtifactsBySession((prev) => ({ ...prev, [sid]: artifacts }));
+      if (outputs && Object.keys(outputs).length > 0) {
+        setOutputsBySession((prev) => ({ ...prev, [sid]: outputs }));
+      } else {
+        setOutputsBySession((prev) => ({ ...prev, [sid]: undefined }));
       }
 
       appendMessage(sid, {
@@ -273,8 +296,8 @@ export function WorkspacePage() {
         text: response.message || streamedText || "(empty response)",
         timestamp: response.timestamp ?? new Date().toISOString(),
         runtime,
-        artifacts,
-        artifactsKeys: response.artifactsKeys
+        outputs,
+        outputKeys: response.outputKeys
       });
     } catch (error) {
       if (error instanceof HttpError) {
@@ -338,7 +361,7 @@ export function WorkspacePage() {
 
       <aside className="side-main">
         <RuntimePanel runtime={runtimeBySession[activeSessionId]} />
-        <ExportPanel artifacts={artifactsBySession[activeSessionId]} />
+        <ExportPanel outputs={outputsBySession[activeSessionId]} />
       </aside>
     </div>
   );

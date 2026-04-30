@@ -10,6 +10,7 @@ from src.infrastructure.observability.langfuse_observability import (
     TokenUsageCollector,
     build_langchain_config,
     langchain_observation_context,
+    operation_metadata,
 )
 
 
@@ -68,8 +69,28 @@ def test_runtime_engine_invoke_async_passes_observation_config(tmp_path) -> None
     assert result == {"ok": True}
     assert captured["payload"] == {"x": 1}
     assert captured["config"]["callbacks"] == [sentinel]
-    assert captured["config"]["metadata"] == {"local": True, "session_id": "s1"}
+    assert captured["config"]["metadata"] == {"local": "true", "session_id": "s1"}
     assert captured["config"]["tags"] == ["local", "trace"]
+
+
+def test_operation_metadata_is_safe_for_langfuse_v4_propagation() -> None:
+    metadata = operation_metadata(
+        "chat.turn",
+        operation_type="turn",
+        workflow_id=None,
+        message_chars=12,
+        workflow_completed=False,
+        tags=["academic-copilot", "mode:dynamic"],
+    )
+
+    assert metadata == {
+        "operation": "chat.turn",
+        "operation_type": "turn",
+        "workflow_id": "none",
+        "message_chars": "12",
+        "workflow_completed": "false",
+        "tags": '["academic-copilot", "mode:dynamic"]',
+    }
 
 
 def test_token_usage_collector_reads_provider_usage() -> None:

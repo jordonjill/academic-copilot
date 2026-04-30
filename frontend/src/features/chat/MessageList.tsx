@@ -29,8 +29,8 @@ export function MessageList({ messages, pending, pendingText, streamingAssistant
               {message.runtime.current_node ? ` node=${message.runtime.current_node}` : ""}
             </div>
           ) : null}
-          {message.artifactsKeys && message.artifactsKeys.length > 0 ? (
-            <div className="message-meta">artifacts: {message.artifactsKeys.join(", ")}</div>
+          {message.outputKeys && message.outputKeys.length > 0 ? (
+            <div className="message-meta">outputs: {message.outputKeys.join(", ")}</div>
           ) : null}
         </article>
       ))}
