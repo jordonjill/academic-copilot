@@ -63,6 +63,7 @@ system_prompt: |
   last_execution_output: {last_execution_output}
   last_tool_outputs_count: {last_tool_outputs_count}
   requested_workflow_id: {requested_workflow_id}
+  workflow_completed: {workflow_completed}
   step_count: {step_count}
   loop_count: {loop_count}
   Runtime decision constraints:

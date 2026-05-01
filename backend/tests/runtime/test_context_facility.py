@@ -12,7 +12,6 @@ def test_messages_to_text_uses_scope_windows():
             supervisor_messages_window=4,
             trace_recent_window=2,
             trace_max_items=6,
-            shared_summary_items=3,
             text_preview_chars=120,
             trace_output_preview_chars=120,
             trace_reason_chars=120,
@@ -44,7 +43,6 @@ def test_trace_is_capped_and_recent_window_applies():
             supervisor_messages_window=4,
             trace_recent_window=2,
             trace_max_items=3,
-            shared_summary_items=3,
             text_preview_chars=120,
             trace_output_preview_chars=120,
             trace_reason_chars=120,
@@ -68,7 +66,6 @@ def test_compact_artifacts_excludes_internal_keys():
             supervisor_messages_window=4,
             trace_recent_window=2,
             trace_max_items=3,
-            shared_summary_items=1,
             text_preview_chars=120,
             trace_output_preview_chars=120,
             trace_reason_chars=120,
@@ -93,4 +90,7 @@ def test_compact_artifacts_excludes_internal_keys():
 
     assert "research_gap" in summary
     assert "task_input" not in summary
-    assert len(compact["shared_summary"]) == 1
+    assert "task_input" not in compact["keys"]
+    assert "shared" not in compact["keys"]
+    assert "execution_trace" not in compact["keys"]
+    assert "shared_summary" not in compact

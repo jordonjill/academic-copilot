@@ -33,7 +33,9 @@ def _state() -> dict:
             "status": "idle",
         },
         "io": {"last_model_output": None, "last_execution_output": None, "last_tool_outputs": []},
-        "artifacts": {"topic": None, "shared": {}},
+        "artifacts": {"topic": None},
+        "task": {},
+        "executions": [],
         "output": {"final_text": None, "final_structured": None},
         "errors": {"last_error": None},
     }
@@ -226,16 +228,19 @@ def test_runtime_engine_supervisor_runs_subagent_then_replies(monkeypatch, tmp_p
     assert len(researcher_payloads) == 1
     payload = researcher_payloads[0]
     assert payload["user_text"] == "collect three references"
-    assert "[TASK_INPUT_V1]" in payload["messages"]
-    assert '"protocol": "task_input_v1"' in payload["messages"]
-    assert '"instruction": "collect three references"' in payload["messages"]
-    assert "collect three references" in payload["messages"]
-    assert "hello" not in payload["messages"]
+    assert "messages" not in payload
     artifacts = json.loads(payload["artifacts"])
-    assert artifacts["supervisor_instruction"] == "collect three references"
-    assert any(
-        isinstance(message, HumanMessage)
-        and "Supervisor task for researcher: collect three references" in message.content
+    assert "supervisor_instruction" not in artifacts
+    assert payload["supervisor_instruction"] == "collect three references"
+    assert state["executions"][0]["source_kind"] == "supervisor"
+    assert state["executions"][0]["instruction"] == "collect three references"
+    assert state["executions"][1]["source_kind"] == "subagent"
+    assert state["executions"][1]["source_id"] == "researcher"
+    assert all(
+        not (
+            isinstance(message, HumanMessage)
+            and "Supervisor task for researcher: collect three references" in message.content
+        )
         for message in state["context"]["messages"]
     )
 
@@ -648,7 +653,7 @@ def test_runtime_engine_workflow_react_payload_uses_task_input_protocol(monkeypa
     assert '"paper_pool"' in first_text
 
 
-def test_apply_agent_output_recovers_when_shared_is_non_dict(tmp_path):
+def test_apply_agent_output_records_execution_without_shared_artifact(tmp_path):
     engine = RuntimeEngine(registry=_registry(tmp_path))
     state = _state()
     state["artifacts"]["shared"] = None
@@ -661,8 +666,10 @@ def test_apply_agent_output_recovers_when_shared_is_non_dict(tmp_path):
         parsed={"artifacts": {"shared": None}},
     )
 
-    assert isinstance(state["artifacts"]["shared"], dict)
-    assert state["artifacts"]["shared"]["researcher"]["output_text"] == "hello"
+    assert "shared" not in state["artifacts"]
+    assert state["executions"][-1]["source_id"] == "researcher"
+    assert state["executions"][-1]["node"] == "researcher_node"
+    assert state["executions"][-1]["output_text"] == "hello"
 
 
 def test_requested_workflow_skips_finalize_when_supervisor_not_chain(monkeypatch, tmp_path):

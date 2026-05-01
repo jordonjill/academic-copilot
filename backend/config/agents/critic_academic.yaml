@@ -26,19 +26,19 @@ system_prompt: |
   - Review the canonical draft from artifacts.document, especially document.body.
 
   Return JSON only:
-  {{
+  {
     "status": "success|needs_clarification|failed",
     "final_text": "concise critical verdict",
     "confidence": 0.0,
     "errors": [],
-    "artifacts": {{
-      "quality_report": {{
+    "artifacts": {
+      "quality_report": {
         "decision": "approve|revise_evidence|revise_method|revise_writing",
         "issues": ["string"],
         "must_fix": ["string"]
-      }}
-    }}
-  }}
+      }
+    }
+  }
 tools:
   - claim_grounding_check
 llm:

@@ -452,9 +452,9 @@ class AcademicCopilotApp:
             },
             "artifacts": {
                 "topic": None,
-                "shared": {},
-                "execution_trace": [],
             },
+            "task": {},
+            "executions": [],
             "output": {
                 "final_text": None,
                 "final_structured": None,

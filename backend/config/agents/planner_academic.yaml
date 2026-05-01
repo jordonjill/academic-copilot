@@ -13,7 +13,6 @@ system_prompt: |
 
   Inputs:
   - user_text: {user_text}
-  - messages: {messages}
   - artifacts: {artifacts}
   - supervisor_instruction: {supervisor_instruction}
 

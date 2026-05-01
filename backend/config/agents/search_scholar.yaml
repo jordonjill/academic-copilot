@@ -24,20 +24,20 @@ system_prompt: |
   - Return structured evidence items with title, uri, summary, and venue/year when possible.
 
   Return JSON only:
-  {{
+  {
     "status": "success|needs_clarification|failed",
     "final_text": "concise evidence retrieval summary",
     "confidence": 0.0,
     "errors": [],
-    "artifacts": {{
+    "artifacts": {
       "evidence_bank": [
-        {{"title": "string", "uri": "string", "summary": "string", "venue": "string", "year": "string"}}
+        {"title": "string", "uri": "string", "summary": "string", "venue": "string", "year": "string"}
       ],
       "citations": [
-        {{"title": "string", "uri": "string", "source_type": "paper|web"}}
+        {"title": "string", "uri": "string", "source_type": "paper|web"}
       ]
-    }}
-  }}
+    }
+  }
 tools:
   - scholar_search
   - citation_graph

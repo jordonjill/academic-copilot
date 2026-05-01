@@ -7,7 +7,8 @@ from src.application.runtime.execution.runtime_result_service import RuntimeResu
 
 def _state() -> dict:
     return {
-        "artifacts": {"shared": {}},
+        "artifacts": {"topic": None},
+        "executions": [],
         "runtime": {
             "mode": "dynamic",
             "workflow_id": None,
@@ -51,7 +52,10 @@ def test_writer_academic_keeps_canonical_document_artifact() -> None:
         },
     )
 
-    assert state["output"]["final_text"] == "draft ready"
+    assert state["output"]["final_text"] is None
+    assert state["io"]["last_execution_output"] == "draft ready"
+    assert state["executions"][-1]["output_text"] == "draft ready"
+    assert state["executions"][-1]["artifact_keys"] == ["document"]
     assert state["artifacts"]["document"]["title"] == "Doc title"
     assert state["artifacts"]["document"]["body"] == "Doc body"
 
@@ -82,13 +86,6 @@ def test_build_result_exposes_only_public_outputs() -> None:
                 "pdf_path": "data/exports/report.pdf",
             },
             "private_notes": "do not expose",
-            "shared": {
-                "researcher": {
-                    "output_text": "large internal output",
-                    "parsed": {"artifacts": {"files": [{"content": "secret-ish text"}]}},
-                    "tool_outputs": [{"content": "tool internals"}],
-                }
-            },
         }
     )
 
@@ -114,18 +111,12 @@ def test_build_result_extracts_nested_report_exports_only() -> None:
     service = RuntimeResultService(logging.getLogger(__name__))
     state = _state()
     state["output"]["final_text"] = "done"
-    state["artifacts"]["shared"] = {
-        "report_exporter": {
-            "output_text": "internal",
-            "parsed": {
-                "artifacts": {
-                    "report_exports": {"docx_path": "report.docx"},
-                    "files": [{"content": "not public"}],
-                }
-            },
-            "tool_outputs": [{"content": "not public"}],
+    state["artifacts"].update(
+        {
+            "report_exports": {"docx_path": "report.docx"},
+            "files": [{"content": "not public"}],
         }
-    }
+    )
 
     result = service.build_result(state)
 

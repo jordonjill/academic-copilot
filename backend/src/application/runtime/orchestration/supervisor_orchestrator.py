@@ -3,7 +3,7 @@ from __future__ import annotations
 from time import perf_counter
 from typing import Any, Awaitable, Callable, Optional
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage
 
 from src.application.runtime.config.config_registry import ConfigRegistry
 from src.application.runtime.contracts.spec_models import AgentSpec
@@ -169,13 +169,15 @@ class SupervisorOrchestrator:
 
                     state["runtime"]["current_node"] = agent_id
                     instruction = decision.get("instruction")
-                    if isinstance(instruction, str) and instruction.strip():
-                        state["artifacts"]["supervisor_instruction"] = instruction
-                        state["context"]["messages"].append(
-                            HumanMessage(content=f"Supervisor task for {agent_id}: {instruction}")
-                        )
                     input_artifact_keys = decision.get("input_artifact_keys")
                     inline_input_artifacts = decision.get("inline_input_artifacts")
+                    append_execution_trace(
+                        state,
+                        action=action,
+                        target=agent_id,
+                        reason=str(decision.get("reason") or ""),
+                        instruction=str(instruction or ""),
+                    )
                     execute_subagent_isolated(
                         state,
                         agent_id,
@@ -183,13 +185,6 @@ class SupervisorOrchestrator:
                         input_artifact_keys if isinstance(input_artifact_keys, list) else None,
                         inline_input_artifacts if isinstance(inline_input_artifacts, dict) else None,
                         tool_budget=turn_tool_budget,
-                    )
-                    append_execution_trace(
-                        state,
-                        action=action,
-                        target=agent_id,
-                        reason=str(decision.get("reason") or ""),
-                        instruction=str(instruction or ""),
                     )
                     subagent_call_counts[agent_id] = calls_used + 1
                     state["runtime"]["step_count"] += 1
@@ -432,13 +427,15 @@ class SupervisorOrchestrator:
                         current_node=agent_id,
                     )
                     instruction = decision.get("instruction")
-                    if isinstance(instruction, str) and instruction.strip():
-                        state["artifacts"]["supervisor_instruction"] = instruction
-                        state["context"]["messages"].append(
-                            HumanMessage(content=f"Supervisor task for {agent_id}: {instruction}")
-                        )
                     input_artifact_keys = decision.get("input_artifact_keys")
                     inline_input_artifacts = decision.get("inline_input_artifacts")
+                    append_execution_trace(
+                        state,
+                        action=action,
+                        target=agent_id,
+                        reason=str(decision.get("reason") or ""),
+                        instruction=str(instruction or ""),
+                    )
                     await execute_subagent_isolated_async(
                         state,
                         agent_id,
@@ -446,13 +443,6 @@ class SupervisorOrchestrator:
                         input_artifact_keys if isinstance(input_artifact_keys, list) else None,
                         inline_input_artifacts if isinstance(inline_input_artifacts, dict) else None,
                         tool_budget=turn_tool_budget,
-                    )
-                    append_execution_trace(
-                        state,
-                        action=action,
-                        target=agent_id,
-                        reason=str(decision.get("reason") or ""),
-                        instruction=str(instruction or ""),
                     )
                     subagent_call_counts[agent_id] = calls_used + 1
                     state["runtime"]["step_count"] += 1

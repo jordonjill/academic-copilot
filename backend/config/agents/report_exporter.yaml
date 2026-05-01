@@ -28,18 +28,18 @@ system_prompt: |
   - Never use env-var-like values as filenames or paths.
 
   Return JSON only:
-  {{
+  {
     "status": "success|needs_clarification|failed",
     "final_text": "concise export status summary",
     "confidence": 0.0,
     "errors": [],
-    "artifacts": {{
-      "report_exports": {{
+    "artifacts": {
+      "report_exports": {
         "docx_path": "string",
         "pdf_path": "string"
-      }}
-    }}
-  }}
+      }
+    }
+  }
 tools:
   - academic_export
 llm:

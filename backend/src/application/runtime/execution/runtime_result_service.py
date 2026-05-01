@@ -18,6 +18,13 @@ _PUBLIC_RUNTIME_KEYS = (
     "status",
     "token_usage",
 )
+_INTERNAL_ARTIFACT_KEYS = {
+    "shared",
+    "execution_trace",
+    "supervisor_instruction",
+    "task_input",
+    "workflow_runner_input",
+}
 
 
 class RuntimeResultService:
@@ -33,70 +40,54 @@ class RuntimeResultService:
         agent_id: str,
         text: str,
         parsed: Optional[Dict[str, Any]],
+        source_kind: str = "agent",
     ) -> None:
         artifacts_state = state.get("artifacts")
         if not isinstance(artifacts_state, dict):
             artifacts_state = {}
             state["artifacts"] = artifacts_state
+        for key in _INTERNAL_ARTIFACT_KEYS:
+            artifacts_state.pop(key, None)
 
-        shared = artifacts_state.get("shared")
-        if not isinstance(shared, dict):
-            if shared is not None:
-                self._logger.warning(
-                    "runtime.artifacts.shared_reset_invalid_type agent_id=%s type=%s",
-                    agent_id,
-                    type(shared).__name__,
-                )
-            shared = {}
-            artifacts_state["shared"] = shared
-
-        shared.pop(agent_id, None)
-        shared[agent_id] = {
-            "node": node_name,
-            "output_text": text,
-            "parsed": parsed,
-            "tool_outputs": list(state["io"].get("last_tool_outputs", [])),
-        }
-
+        artifacts_patch: dict[str, Any] = {}
+        record_text = text
         if parsed and isinstance(parsed, dict):
-            artifacts_patch = parsed.get("artifacts")
-            if isinstance(artifacts_patch, dict):
-                patch = dict(artifacts_patch)
-                shared_patch = (
-                    patch.pop("shared", None)
-                    if "shared" in patch or "shared" in artifacts_patch
-                    else None
-                )
-                artifacts_state.update(patch)
-                if "shared" in artifacts_patch:
-                    if isinstance(shared_patch, dict):
-                        target_shared = artifacts_state.get("shared")
-                        if not isinstance(target_shared, dict):
-                            target_shared = {}
-                            artifacts_state["shared"] = target_shared
-                        target_shared.update(shared_patch)
-                    else:
-                        self._logger.warning(
-                            "runtime.artifacts.shared_patch_ignored agent_id=%s type=%s",
-                            agent_id,
-                            type(shared_patch).__name__,
-                        )
-
-            final_text = parsed.get("final_text")
-            if isinstance(final_text, str) and final_text.strip():
-                state["output"]["final_text"] = final_text
-
+            raw_patch = parsed.get("artifacts")
+            if isinstance(raw_patch, dict):
+                artifacts_patch = self._public_artifacts_patch(raw_patch)
+                artifacts_state.update(artifacts_patch)
+            parsed_final_text = parsed.get("final_text")
+            if isinstance(parsed_final_text, str) and parsed_final_text.strip():
+                record_text = parsed_final_text
             final_structured = parsed.get("final_structured")
             if isinstance(final_structured, dict):
                 state["output"]["final_structured"] = final_structured
+        if isinstance(record_text, str) and record_text.strip():
+            state["io"]["last_execution_output"] = record_text
 
-        if node_name == "reporter" and not state["output"].get("final_text"):
-            state["output"]["final_text"] = text
+        self._append_execution_record(
+            state,
+            {
+                "source_kind": source_kind,
+                "source_id": agent_id,
+                "node": node_name,
+                "output_text": record_text,
+                "output_preview": record_text[:240] if isinstance(record_text, str) else "",
+                "artifact_keys": sorted(artifacts_patch.keys()),
+                "tool_outputs": list(state["io"].get("last_tool_outputs", [])),
+                **self._execution_status_fields(parsed),
+            },
+        )
 
     def best_available_final_text(self, state: RuntimeState) -> Optional[str]:
         final_text = state["output"].get("final_text")
         if isinstance(final_text, str) and final_text.strip():
             return final_text
+
+        for record in reversed(self._execution_records(state)):
+            output_text = record.get("output_text")
+            if isinstance(output_text, str) and output_text.strip():
+                return output_text
 
         shared = state.get("artifacts", {}).get("shared", {})
         if isinstance(shared, dict):
@@ -200,6 +191,45 @@ class RuntimeResultService:
                 if coerced:
                     return coerced
         return {}
+
+    @staticmethod
+    def _public_artifacts_patch(raw_patch: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in dict(raw_patch).items()
+            if isinstance(key, str) and key not in _INTERNAL_ARTIFACT_KEYS
+        }
+
+    @staticmethod
+    def _execution_status_fields(parsed: Optional[Dict[str, Any]]) -> dict[str, Any]:
+        if not isinstance(parsed, dict):
+            return {}
+        fields: dict[str, Any] = {}
+        status = parsed.get("status")
+        if isinstance(status, str) and status:
+            fields["status"] = status
+        confidence = parsed.get("confidence")
+        if isinstance(confidence, (int, float)):
+            fields["confidence"] = float(confidence)
+        errors = parsed.get("errors")
+        if isinstance(errors, list):
+            fields["errors"] = [item for item in errors if isinstance(item, str)]
+        return fields
+
+    @staticmethod
+    def _execution_records(state: RuntimeState) -> list[dict[str, Any]]:
+        records = state.get("executions")
+        if not isinstance(records, list):
+            return []
+        return [record for record in records if isinstance(record, dict)]
+
+    @staticmethod
+    def _append_execution_record(state: RuntimeState, record: dict[str, Any]) -> None:
+        records = state.get("executions")
+        if not isinstance(records, list):
+            records = []
+            state["executions"] = records
+        records.append(record)
 
     @staticmethod
     def _coerce_report_exports(value: Mapping[str, Any]) -> dict[str, str]:

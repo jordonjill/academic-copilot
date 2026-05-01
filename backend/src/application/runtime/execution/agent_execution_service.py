@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from langchain_core.messages import AIMessage
 
 from src.application.runtime.contracts.spec_models import AgentSpec
 from src.application.runtime.contracts.state_types import RuntimeState
+from src.application.runtime.execution.task_payload import render_chain_payload, render_react_messages
 from src.application.runtime.providers.context_facility import ContextFacility
 from src.infrastructure.observability.langfuse_observability import (
     OP_AGENT_CHAIN,
@@ -24,7 +24,7 @@ class AgentExecutionService:
         context_facility: ContextFacility,
         build_agent_from_spec_fn: Callable[[AgentSpec, Any, Callable[[str], Any]], Any],
         resolve_llm: Callable[[AgentSpec], Any],
-        apply_agent_output: Callable[[RuntimeState, str, str, str, Optional[Dict[str, Any]]], None],
+        apply_agent_output: Callable[..., None],
         coerce_text: Callable[[Any], str],
         try_parse_json: Callable[[str], Optional[Dict[str, Any]]],
         normalize_agent_parsed_payload: Callable[[str, Optional[Dict[str, Any]]], Optional[Dict[str, Any]]],
@@ -155,17 +155,7 @@ class AgentExecutionService:
 
     def build_chain_payload(self, state: RuntimeState, node_name: str, agent_id: str) -> Dict[str, Any]:
         del node_name, agent_id
-        artifacts = state.get("artifacts", {})
-        artifacts_dict = artifacts if isinstance(artifacts, dict) else {}
-        return {
-            "user_text": state["input"].get("user_text", ""),
-            "messages": self._context_facility.messages_to_text(
-                state["context"].get("messages", []),
-                scope="default",
-            ),
-            "artifacts": json.dumps(artifacts_dict, ensure_ascii=False, default=str),
-            "supervisor_instruction": artifacts_dict.get("supervisor_instruction", ""),
-        }
+        return render_chain_payload(state, self._context_facility)
 
     def react_max_internal_steps_for_state(self, state: RuntimeState, spec: AgentSpec) -> int:
         base = self._react_max_internal_steps_default
@@ -292,7 +282,12 @@ class AgentExecutionService:
         spec: AgentSpec,
         runnable: Any,
     ) -> None:
-        messages = list(state["context"].get("messages", []))
+        messages = render_react_messages(
+            state,
+            agent_id=agent_id,
+            node_name=node_name,
+            runtime_mode=str(state.get("runtime", {}).get("mode", spec.mode)),
+        )
         max_internal_steps = self.react_max_internal_steps_for_state(state, spec)
         raw = self.invoke_react_sync(
             runnable,
@@ -329,7 +324,12 @@ class AgentExecutionService:
         spec: AgentSpec,
         runnable: Any,
     ) -> None:
-        messages = list(state["context"].get("messages", []))
+        messages = render_react_messages(
+            state,
+            agent_id=agent_id,
+            node_name=node_name,
+            runtime_mode=str(state.get("runtime", {}).get("mode", spec.mode)),
+        )
         max_internal_steps = self.react_max_internal_steps_for_state(state, spec)
         raw = await self.invoke_react_async(
             runnable,

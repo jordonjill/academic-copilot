@@ -96,23 +96,29 @@ class SupervisorPayloadBuilder:
             last_model_output = io_state.get("last_model_output")
         tool_outputs = state.get("io", {}).get("last_tool_outputs")
         tool_count = len(tool_outputs) if isinstance(tool_outputs, list) else 0
-        self._context_facility.append_trace(
-            artifacts,
-            entry={
+        records = state.get("executions")
+        if not isinstance(records, list):
+            records = []
+            state["executions"] = records
+        records.append(
+            {
+                "source_kind": "supervisor",
+                "source_id": "supervisor",
                 "step_count": int(state.get("runtime", {}).get("step_count", 0)),
                 "action": action,
                 "target": target,
                 "reason": (reason or "")[: self._context_facility.policy.trace_reason_chars],
                 "instruction": (instruction or "")[: self._context_facility.policy.trace_instruction_chars],
                 "tool_outputs_count": tool_count,
-                "last_model_output_preview": (last_model_output or "")[
+                "output_preview": (last_model_output or "")[
                     : self._context_facility.policy.trace_output_preview_chars
                 ]
                 if isinstance(last_model_output, str)
                 else "",
-            },
-            trace_key="execution_trace",
+            }
         )
+        if len(records) > self._context_facility.policy.trace_max_items:
+            del records[: len(records) - self._context_facility.policy.trace_max_items]
 
     def build_supervisor_payload(
         self,
@@ -129,13 +135,21 @@ class SupervisorPayloadBuilder:
         artifacts = state.get("artifacts", {})
         compact_artifacts = self._context_facility.compact_artifacts(
             artifacts if isinstance(artifacts, dict) else {},
-            excluded_keys={"shared", "execution_trace", "task_input", "workflow_runner_input"},
+            excluded_keys={
+                "shared",
+                "execution_trace",
+                "supervisor_instruction",
+                "task_input",
+                "workflow_runner_input",
+            },
         )
         ltm_profile = self._load_ltm_profile(str(state["input"].get("user_id", "")))
-        recent_steps = self._context_facility.recent_trace(
-            artifacts if isinstance(artifacts, dict) else {},
-            trace_key="execution_trace",
-        )
+        recent_steps = self._recent_execution_steps(state)
+        if not recent_steps:
+            recent_steps = self._context_facility.recent_trace(
+                artifacts if isinstance(artifacts, dict) else {},
+                trace_key="execution_trace",
+            )
         raw_tool_outputs = state.get("io", {}).get("last_tool_outputs", [])
         tool_outputs_count = len(raw_tool_outputs) if isinstance(raw_tool_outputs, list) else 0
         return {
@@ -158,3 +172,31 @@ class SupervisorPayloadBuilder:
             "loop_count": state["runtime"].get("loop_count", 0),
             "workflow_completed": workflow_completed,
         }
+
+    def _recent_execution_steps(self, state: RuntimeState) -> list[dict[str, Any]]:
+        records = state.get("executions")
+        if not isinstance(records, list):
+            return []
+        rows: list[dict[str, Any]] = []
+        for record in records[-self._context_facility.policy.trace_recent_window :]:
+            if not isinstance(record, dict):
+                continue
+            item: dict[str, Any] = {
+                "source_kind": record.get("source_kind"),
+                "source_id": record.get("source_id"),
+            }
+            for key in (
+                "node",
+                "action",
+                "target",
+                "reason",
+                "instruction",
+                "step_count",
+                "output_preview",
+                "artifact_keys",
+                "status",
+            ):
+                if key in record:
+                    item[key] = record.get(key)
+            rows.append(item)
+        return rows

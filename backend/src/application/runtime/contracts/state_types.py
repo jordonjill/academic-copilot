@@ -37,11 +37,32 @@ class RuntimeIOState(TypedDict):
 
 class RuntimeArtifactsState(TypedDict):
     topic: Optional[str]
-    shared: dict[str, Any]
-    execution_trace: list[dict[str, Any]]
-    supervisor_instruction: NotRequired[str]
+
+
+class RuntimeTaskState(TypedDict):
+    instruction: NotRequired[str]
+    input_artifact_keys: NotRequired[list[str]]
+    input_artifacts: NotRequired[dict[str, Any]]
     task_input: NotRequired[dict[str, Any]]
     workflow_runner_input: NotRequired[dict[str, Any]]
+
+
+class RuntimeExecutionRecord(TypedDict):
+    source_kind: str
+    source_id: str
+    node: NotRequired[str]
+    action: NotRequired[str]
+    target: NotRequired[Optional[str]]
+    instruction: NotRequired[str]
+    reason: NotRequired[str]
+    step_count: NotRequired[int]
+    output_text: NotRequired[str]
+    output_preview: NotRequired[str]
+    artifact_keys: NotRequired[list[str]]
+    tool_outputs: NotRequired[list[Any]]
+    status: NotRequired[str]
+    confidence: NotRequired[float]
+    errors: NotRequired[list[str]]
 
 
 class RuntimeOutputState(TypedDict):
@@ -59,5 +80,7 @@ class RuntimeState(TypedDict):
     runtime: RuntimeMetaState
     io: RuntimeIOState
     artifacts: RuntimeArtifactsState
+    task: NotRequired[RuntimeTaskState]
+    executions: NotRequired[list[RuntimeExecutionRecord]]
     output: RuntimeOutputState
     errors: RuntimeErrorsState

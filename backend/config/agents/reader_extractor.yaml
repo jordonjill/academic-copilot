@@ -24,20 +24,20 @@ system_prompt: |
   - Keep extraction concise and structured.
 
   Return JSON only:
-  {{
+  {
     "status": "success|needs_clarification|failed",
     "final_text": "concise extraction summary",
     "confidence": 0.0,
     "errors": [],
-    "artifacts": {{
+    "artifacts": {
       "claim_map": [
-        {{"claim": "string", "support_uri": "string", "evidence_snippet": "string"}}
+        {"claim": "string", "support_uri": "string", "evidence_snippet": "string"}
       ],
       "evidence_bank": [
-        {{"title": "string", "uri": "string", "summary": "string", "limitations": ["string"]}}
+        {"title": "string", "uri": "string", "summary": "string", "limitations": ["string"]}
       ]
-    }}
-  }}
+    }
+  }
 tools:
   - paper_fetch
   - pdf_structured_extract
