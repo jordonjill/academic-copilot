@@ -167,6 +167,7 @@ class SupervisorOrchestrator:
                         )
                         continue
 
+                    state["runtime"]["current_node"] = agent_id
                     instruction = decision.get("instruction")
                     if isinstance(instruction, str) and instruction.strip():
                         state["artifacts"]["supervisor_instruction"] = instruction
@@ -199,6 +200,13 @@ class SupervisorOrchestrator:
                                 "step_number": state["runtime"]["step_count"],
                                 "agent_id": agent_id,
                                 "next_node": None,
+                                "mode": state["runtime"].get("mode"),
+                                "workflow_id": state["runtime"].get("workflow_id"),
+                                "current_node": state["runtime"].get("current_node"),
+                                "max_steps": state["runtime"].get("max_steps"),
+                                "loop_count": state["runtime"].get("loop_count"),
+                                "max_loops": state["runtime"].get("max_loops"),
+                                "status": state["runtime"].get("status"),
                                 "supervisor_reason": "supervisor selected direct subagent execution",
                                 "last_model_output": state["io"].get("last_model_output"),
                                 "tool_outputs": list(state["io"].get("last_tool_outputs", [])),
@@ -267,9 +275,49 @@ class SupervisorOrchestrator:
                 }
             )
 
+        async def _emit_runtime_status(
+            message: str,
+            *,
+            action: str,
+            target: Optional[str] = None,
+            workflow_id: Optional[str] = None,
+            current_node: Optional[str] = None,
+        ) -> None:
+            runtime = state.get("runtime", {})
+            payload: dict[str, Any] = {
+                "type": "status",
+                "message": message,
+                "action": action,
+                "target": target,
+            }
+            if isinstance(runtime, dict):
+                payload.update(
+                    {
+                        "mode": runtime.get("mode"),
+                        "workflow_id": workflow_id
+                        if workflow_id is not None
+                        else runtime.get("workflow_id"),
+                        "current_node": current_node
+                        if current_node is not None
+                        else runtime.get("current_node"),
+                        "step_count": runtime.get("step_count"),
+                        "max_steps": runtime.get("max_steps"),
+                        "loop_count": runtime.get("loop_count"),
+                        "max_loops": runtime.get("max_loops"),
+                        "status": runtime.get("status"),
+                    }
+                )
+            await emit_runtime_event_async(payload)
+
         if requested_workflow_id:
             if requested_workflow_id not in self._registry.workflows:
                 raise ValueError(f"Unknown workflow_id: {requested_workflow_id}")
+            await _emit_runtime_status(
+                f"Starting workflow: {requested_workflow_id}",
+                action="run_workflow",
+                target=requested_workflow_id,
+                workflow_id=requested_workflow_id,
+            )
             await run_workflow_async(state, requested_workflow_id, step_callback)
             await finalize_with_supervisor_async(state, requested_workflow_id, _emit_supervisor_delta)
             return
@@ -330,6 +378,12 @@ class SupervisorOrchestrator:
                     continue
                 workflow_id = resolve_workflow_target(decision, state)
                 if workflow_id and workflow_id in self._registry.workflows:
+                    await _emit_runtime_status(
+                        f"Starting workflow: {workflow_id}",
+                        action=action,
+                        target=workflow_id,
+                        workflow_id=workflow_id,
+                    )
                     append_execution_trace(
                         state,
                         action=action,
@@ -370,6 +424,13 @@ class SupervisorOrchestrator:
                         )
                         continue
 
+                    state["runtime"]["current_node"] = agent_id
+                    await _emit_runtime_status(
+                        f"Calling agent: {agent_id}",
+                        action=action,
+                        target=agent_id,
+                        current_node=agent_id,
+                    )
                     instruction = decision.get("instruction")
                     if isinstance(instruction, str) and instruction.strip():
                         state["artifacts"]["supervisor_instruction"] = instruction
@@ -402,6 +463,13 @@ class SupervisorOrchestrator:
                             "step_number": state["runtime"]["step_count"],
                             "agent_id": agent_id,
                             "next_node": None,
+                            "mode": state["runtime"].get("mode"),
+                            "workflow_id": state["runtime"].get("workflow_id"),
+                            "current_node": state["runtime"].get("current_node"),
+                            "max_steps": state["runtime"].get("max_steps"),
+                            "loop_count": state["runtime"].get("loop_count"),
+                            "max_loops": state["runtime"].get("max_loops"),
+                            "status": state["runtime"].get("status"),
                             "supervisor_reason": "supervisor selected direct subagent execution",
                             "last_model_output": state["io"].get("last_model_output"),
                             "tool_outputs": list(state["io"].get("last_tool_outputs", [])),
@@ -411,6 +479,12 @@ class SupervisorOrchestrator:
                 action = "direct_reply"
 
             if action == "direct_reply":
+                await _emit_runtime_status(
+                    "Preparing final answer",
+                    action=action,
+                    target=None,
+                    current_node=None,
+                )
                 final_text = decision.get("final_text")
                 if not isinstance(final_text, str) or not final_text.strip():
                     final_text = decision.get("message")

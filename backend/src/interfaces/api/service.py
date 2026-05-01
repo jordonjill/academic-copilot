@@ -477,8 +477,19 @@ class AcademicCopilotApp:
             "timestamp": _ts(),
         }
         if isinstance(runtime, dict):
-            for key in ("max_steps", "loop_count", "max_loops", "status"):
-                if key in runtime:
+            runtime_keys = (
+                "mode",
+                "workflow_id",
+                "current_node",
+                "max_steps",
+                "loop_count",
+                "max_loops",
+                "status",
+            )
+            for key in runtime_keys:
+                if key in step:
+                    event[key] = step[key]
+                elif key in runtime:
                     event[key] = runtime[key]
         return event
 

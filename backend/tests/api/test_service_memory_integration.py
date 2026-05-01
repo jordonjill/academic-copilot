@@ -158,6 +158,42 @@ def test_chat_async_attaches_token_usage_to_returned_runtime(monkeypatch):
     assert captured["langfuse_output"]["data"]["runtime"]["token_usage"] == token_usage
 
 
+def test_build_step_event_prefers_workflow_runtime_from_step_payload():
+    state = {
+        "runtime": {
+            "mode": "dynamic",
+            "workflow_id": None,
+            "current_node": None,
+            "max_steps": 8,
+            "loop_count": 0,
+            "status": "running",
+        }
+    }
+
+    event = AcademicCopilotApp._build_step_event(
+        {
+            "step_number": 1,
+            "node_name": "reporter_node",
+            "agent_id": "reporter",
+            "next_node": "end",
+            "mode": "workflow",
+            "workflow_id": "wf1",
+            "current_node": "end",
+            "max_steps": 5,
+            "max_loops": 2,
+            "loop_count": 0,
+            "status": "running",
+        },
+        state,
+    )
+
+    assert event["workflow_id"] == "wf1"
+    assert event["mode"] == "workflow"
+    assert event["current_node"] == "end"
+    assert event["max_steps"] == 5
+    assert event["max_loops"] == 2
+
+
 def test_chat_async_persists_memory_on_runtime_failure(monkeypatch):
     calls: dict = {"persist_called": False}
 

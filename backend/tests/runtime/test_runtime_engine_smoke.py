@@ -240,6 +240,49 @@ def test_runtime_engine_supervisor_runs_subagent_then_replies(monkeypatch, tmp_p
     )
 
 
+def test_run_turn_async_emits_status_when_supervisor_starts_subagent(monkeypatch, tmp_path):
+    engine = RuntimeEngine(registry=_registry(tmp_path))
+    monkeypatch.setattr(engine, "_resolve_llm", lambda spec: object())
+
+    decisions = iter(
+        [
+            {
+                "action": "run_agent",
+                "target": "researcher",
+                "instruction": "collect three references",
+                "done": False,
+            },
+            {"action": "direct_reply", "message": "done after subagent", "done": True},
+        ]
+    )
+
+    def _fake_build(spec, llm, tool_resolver):
+        del llm, tool_resolver
+        if spec.id == "supervisor":
+            return _FakeRunnable(lambda payload: json.dumps(next(decisions)))
+        if spec.id == "researcher":
+            return _FakeRunnable(lambda payload: "research output")
+        raise AssertionError(f"Unexpected agent execution: {spec.id}")
+
+    monkeypatch.setattr("src.application.runtime.runtime_engine.build_agent_from_spec", _fake_build)
+
+    events: list[dict] = []
+
+    async def _event_callback(payload):
+        events.append(payload)
+
+    result = asyncio.run(engine.run_turn_async(_state(), event_callback=_event_callback))
+
+    assert result["success"] is True
+    run_agent_status = next(
+        event for event in events if event.get("type") == "status" and event.get("action") == "run_agent"
+    )
+    assert run_agent_status["message"] == "Calling agent: researcher"
+    assert run_agent_status["target"] == "researcher"
+    assert run_agent_status["current_node"] == "researcher"
+    assert run_agent_status["workflow_id"] is None
+
+
 def test_runtime_engine_supervisor_run_agent_done_true_requires_followup_direct_reply(monkeypatch, tmp_path):
     engine = RuntimeEngine(registry=_registry(tmp_path))
     monkeypatch.setattr(engine, "_resolve_llm", lambda spec: object())
@@ -377,8 +420,13 @@ def test_runtime_engine_supervisor_starts_workflow(monkeypatch, tmp_path):
     assert result["message"] == "workflow finished"
     assert reporter_calls["count"] == 1
     assert state["runtime"]["mode"] == "dynamic"
-    assert state["runtime"]["workflow_id"] is None
+    assert state["runtime"]["workflow_id"] == "wf1"
+    assert state["runtime"]["current_node"] == "end"
+    assert state["runtime"]["max_steps"] == 5
+    assert state["runtime"]["max_loops"] == 2
     assert state["runtime"]["step_count"] >= 1
+    assert result["data"]["runtime"]["workflow_id"] == "wf1"
+    assert result["data"]["runtime"]["tool_budget"]["workflow_id"] == "wf1"
     assert len(supervisor_payloads) == 2
     followup_payload = supervisor_payloads[-1]
     assert followup_payload["workflow_completed"] is False
@@ -720,15 +768,17 @@ def test_run_turn_async_awaits_async_step_callback(monkeypatch, tmp_path):
         ),
     )
 
-    callback_calls = {"count": 0}
+    step_payloads: list[dict] = []
 
     async def _step_callback(payload):
-        del payload
-        callback_calls["count"] += 1
+        step_payloads.append(payload)
 
     result = asyncio.run(engine.run_turn_async(_state(), requested_workflow_id="wf1", step_callback=_step_callback))
     assert result["success"] is True
-    assert callback_calls["count"] == 1
+    assert len(step_payloads) == 1
+    assert step_payloads[0]["workflow_id"] == "wf1"
+    assert step_payloads[0]["max_steps"] == 5
+    assert step_payloads[0]["max_loops"] == 2
 
 
 def test_workflow_tool_budget_enforces_max_tool_limit(monkeypatch, tmp_path):

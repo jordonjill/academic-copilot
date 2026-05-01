@@ -240,11 +240,71 @@ export function WorkspacePage() {
           onStatus: (event) => {
             const message = String(event.message ?? "");
             setPendingText(message || "Running...");
+            const eventMode = typeof event.mode === "string" ? event.mode : undefined;
+            const eventWorkflowId =
+              typeof event.workflow_id === "string"
+                ? event.workflow_id
+                : event.workflow_id === null
+                  ? null
+                  : undefined;
+            const eventCurrentNode =
+              typeof event.current_node === "string"
+                ? event.current_node
+                : event.current_node === null
+                  ? null
+                  : undefined;
+            const eventStatus = typeof event.status === "string" ? event.status : undefined;
+            const hasRuntimeUpdate = [
+              "mode",
+              "workflow_id",
+              "current_node",
+              "step_count",
+              "max_steps",
+              "loop_count",
+              "max_loops",
+              "status",
+            ].some((key) => key in event);
+            if (hasRuntimeUpdate) {
+              setRuntimeBySession((prev) => ({
+                ...prev,
+                [sid]: {
+                  ...(prev[sid] ?? {
+                    mode: workflowId ? "workflow" : "dynamic",
+                    workflow_id: workflowId ?? null,
+                    current_node: null,
+                    step_count: 0,
+                    loop_count: 0,
+                    status: "running",
+                  }),
+                  mode: eventMode ?? prev[sid]?.mode ?? (workflowId ? "workflow" : "dynamic"),
+                  workflow_id:
+                    eventWorkflowId !== undefined
+                      ? eventWorkflowId
+                      : prev[sid]?.workflow_id ?? workflowId ?? null,
+                  current_node:
+                    eventCurrentNode !== undefined
+                      ? eventCurrentNode
+                      : prev[sid]?.current_node ?? null,
+                  step_count: Number(event.step_count ?? prev[sid]?.step_count ?? 0),
+                  max_steps: Number(event.max_steps ?? prev[sid]?.max_steps ?? 0) || undefined,
+                  loop_count: Number(event.loop_count ?? prev[sid]?.loop_count ?? 0),
+                  max_loops: Number(event.max_loops ?? prev[sid]?.max_loops ?? 0) || undefined,
+                  status: eventStatus ?? prev[sid]?.status ?? "running",
+                },
+              }));
+            }
           },
           onStep: (event) => {
             const stepNumber = Number(event.step_number ?? 0);
             const nodeName = String(event.node_name ?? "");
             const nextNode = String(event.next_node ?? "");
+            const eventMode = typeof event.mode === "string" ? event.mode : undefined;
+            const eventWorkflowId =
+              typeof event.workflow_id === "string"
+                ? event.workflow_id
+                : event.workflow_id === null
+                  ? null
+                  : undefined;
             setRuntimeBySession((prev) => ({
               ...prev,
               [sid]: {
@@ -256,6 +316,11 @@ export function WorkspacePage() {
                   loop_count: 0,
                   status: "running",
                 }),
+                mode: eventMode ?? prev[sid]?.mode ?? (workflowId ? "workflow" : "dynamic"),
+                workflow_id:
+                  eventWorkflowId !== undefined
+                    ? eventWorkflowId
+                    : prev[sid]?.workflow_id ?? workflowId ?? null,
                 current_node: nodeName || (prev[sid]?.current_node ?? null),
                 step_count: stepNumber > 0 ? stepNumber : prev[sid]?.step_count ?? 0,
                 max_steps: Number(event.max_steps ?? prev[sid]?.max_steps ?? 0) || undefined,

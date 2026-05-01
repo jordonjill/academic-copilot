@@ -195,6 +195,7 @@ class IsolatedExecutionCoordinator:
         self._run_workflow_sync(isolated_state, workflow_id, step_callback)
         state["runtime"]["step_count"] += int(isolated_state.get("runtime", {}).get("step_count", 0))
         state["runtime"]["loop_count"] += int(isolated_state.get("runtime", {}).get("loop_count", 0))
+        self._merge_workflow_runtime(state, isolated_state, workflow_id)
         result = self._isolation.collect_workflow_execution_result(isolated_state, workflow_id)
         self._isolation.deliver_execution_result_to_supervisor(state, result)
 
@@ -228,8 +229,25 @@ class IsolatedExecutionCoordinator:
         await self._run_workflow_async(isolated_state, workflow_id, step_callback)
         state["runtime"]["step_count"] += int(isolated_state.get("runtime", {}).get("step_count", 0))
         state["runtime"]["loop_count"] += int(isolated_state.get("runtime", {}).get("loop_count", 0))
+        self._merge_workflow_runtime(state, isolated_state, workflow_id)
         result = self._isolation.collect_workflow_execution_result(isolated_state, workflow_id)
         self._isolation.deliver_execution_result_to_supervisor(state, result)
+
+    @staticmethod
+    def _merge_workflow_runtime(
+        parent_state: RuntimeState,
+        isolated_state: RuntimeState,
+        workflow_id: str,
+    ) -> None:
+        parent_runtime = parent_state.get("runtime")
+        isolated_runtime = isolated_state.get("runtime")
+        if not isinstance(parent_runtime, dict) or not isinstance(isolated_runtime, dict):
+            return
+
+        parent_runtime["workflow_id"] = workflow_id
+        for key in ("current_node", "max_steps", "max_loops", "tool_budget"):
+            if key in isolated_runtime:
+                parent_runtime[key] = isolated_runtime[key]
 
     def _build_workflow_node_instruction(
         self,
