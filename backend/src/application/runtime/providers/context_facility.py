@@ -9,7 +9,7 @@ from langchain_core.messages import BaseMessage
 from src.application.runtime.utils.env_utils import read_env_int
 
 
-_ContextScope = Literal["default", "supervisor"]
+_ContextScope = Literal["default", "supervisor", "react"]
 
 
 @dataclass(frozen=True)
@@ -24,13 +24,15 @@ class ContextPolicy:
     trace_instruction_chars: int
     subagent_messages_token_cap: int = 0
     supervisor_messages_token_cap: int = 0
+    react_messages_token_cap: int = 0
 
     @classmethod
     def from_env(cls) -> "ContextPolicy":
-        default_messages_window = max(1, read_env_int("CONTEXT_MESSAGES_WINDOW_DEFAULT", 12))
-        supervisor_messages_window = max(1, read_env_int("CONTEXT_MESSAGES_WINDOW_SUPERVISOR", 20))
-        subagent_messages_token_cap = max(0, read_env_int("SUBAGENT_MESSAGES_TOKEN_CAP", 10000))
-        supervisor_messages_token_cap = max(0, read_env_int("SUPERVISOR_MESSAGES_TOKEN_CAP", 20000))
+        default_messages_window = max(1, read_env_int("CONTEXT_MESSAGES_WINDOW_DEFAULT", 16))
+        supervisor_messages_window = max(1, read_env_int("CONTEXT_MESSAGES_WINDOW_SUPERVISOR", 24))
+        subagent_messages_token_cap = max(0, read_env_int("SUBAGENT_MESSAGES_TOKEN_CAP", 64000))
+        supervisor_messages_token_cap = max(0, read_env_int("SUPERVISOR_MESSAGES_TOKEN_CAP", 96000))
+        react_messages_token_cap = max(0, read_env_int("REACT_MESSAGES_TOKEN_CAP", subagent_messages_token_cap))
         trace_recent_window = max(1, read_env_int("CONTEXT_TRACE_WINDOW", 8))
         trace_max_items = max(trace_recent_window, read_env_int("CONTEXT_TRACE_MAX_ITEMS", 64))
         text_preview_chars = max(32, read_env_int("CONTEXT_TEXT_PREVIEW_CHARS", 180))
@@ -42,6 +44,7 @@ class ContextPolicy:
             supervisor_messages_window=supervisor_messages_window,
             subagent_messages_token_cap=subagent_messages_token_cap,
             supervisor_messages_token_cap=supervisor_messages_token_cap,
+            react_messages_token_cap=react_messages_token_cap,
             trace_recent_window=trace_recent_window,
             trace_max_items=trace_max_items,
             text_preview_chars=text_preview_chars,
@@ -66,23 +69,31 @@ class ContextFacility:
         *,
         scope: _ContextScope = "default",
     ) -> str:
-        window = self.policy.default_messages_window
-        token_cap = self.policy.subagent_messages_token_cap
-        if scope == "supervisor":
-            window = self.policy.supervisor_messages_window
-            token_cap = self.policy.supervisor_messages_token_cap
-        selected_messages: list[BaseMessage]
-        token_selected = self._select_recent_messages_by_token_cap(messages, token_cap)
-        if token_selected is not None:
-            selected_messages = token_selected
-        else:
-            selected_messages = messages[-window:]
+        selected_messages = self.select_recent_messages(messages, scope=scope)
         lines: list[str] = []
         for message in selected_messages:
             role = message.__class__.__name__.replace("Message", "").lower() or "message"
             content = _coerce_message_content(message)
             lines.append(f"{role}: {content}")
         return "\n".join(lines)
+
+    def select_recent_messages(
+        self,
+        messages: list[BaseMessage],
+        *,
+        scope: _ContextScope = "default",
+    ) -> list[BaseMessage]:
+        window = self.policy.default_messages_window
+        token_cap = self.policy.subagent_messages_token_cap
+        if scope == "supervisor":
+            window = self.policy.supervisor_messages_window
+            token_cap = self.policy.supervisor_messages_token_cap
+        elif scope == "react":
+            token_cap = self.policy.react_messages_token_cap
+        token_selected = self._select_recent_messages_by_token_cap(messages, token_cap)
+        if token_selected is not None:
+            return token_selected
+        return messages[-window:]
 
     def _select_recent_messages_by_token_cap(
         self,

@@ -168,9 +168,10 @@ Memory is on the main chat path:
   - Before each turn: load latest `working_context` snapshot from SQLite into runtime messages
   - After each turn: persist raw/backbone/context snapshots and apply compression when threshold is exceeded
   - Compression trigger is token-based (`STM_TOKEN_THRESHOLD`)
+  - Compression is reduced toward a lower post-compression target (`STM_POST_COMPRESSION_TARGET_TOKENS`)
   - Compression target keeps:
     - summary budget (`STM_SUMMARY_TARGET_TOKENS`)
-    - recent context budget (`STM_RECENT_TARGET_TOKENS`)
+    - recent context budget derived as `min(STM_TOKEN_THRESHOLD, STM_POST_COMPRESSION_TARGET_TOKENS) - STM_SUMMARY_TARGET_TOKENS`
   - If token budgeting is unavailable, fallback to count-based recent keep (`STM_KEEP_RECENT`)
   - SQLite tables: `raw_messages`, `working_context`, `compression_events`
 - LTM (long-term):
@@ -182,11 +183,12 @@ Memory is on the main chat path:
 Relevant memory/window envs:
 
 - `STM_TOKEN_THRESHOLD`
+- `STM_POST_COMPRESSION_TARGET_TOKENS`
 - `STM_SUMMARY_TARGET_TOKENS`
-- `STM_RECENT_TARGET_TOKENS`
 - `STM_KEEP_RECENT` (fallback)
 - `SUPERVISOR_MESSAGES_TOKEN_CAP`
 - `SUBAGENT_MESSAGES_TOKEN_CAP`
+- `REACT_MESSAGES_TOKEN_CAP`
 
 Conversation persistence details:
 

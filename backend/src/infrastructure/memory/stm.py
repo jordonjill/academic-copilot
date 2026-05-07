@@ -6,7 +6,8 @@ STM（短期记忆）压缩管道。
   2. 若 > STM_TOKEN_THRESHOLD：
        a. filter_backbone() — 保留 Human/AI text，丢弃 ToolMessage
        b. LLM 摘要旧消息（目标 STM_SUMMARY_TARGET_TOKENS）
-       c. 保留最近上下文（优先按 STM_RECENT_TARGET_TOKENS，失败回退 STM_KEEP_RECENT）
+       c. 保留最近上下文（按 min(STM_TOKEN_THRESHOLD, STM_POST_COMPRESSION_TARGET_TOKENS)
+          - STM_SUMMARY_TARGET_TOKENS，失败回退 STM_KEEP_RECENT）
        d. 构造 [SystemMessage(compressed_summary), ...recent_n]
   3. 将主干消息持久化到 SQLite
   4. 返回更新后的 state 字段
@@ -34,7 +35,7 @@ from langchain_core.messages import (
 from src.infrastructure.config.config import (
     MEMORY_PIPELINE_ENABLED,
     STM_KEEP_RECENT,
-    STM_RECENT_TARGET_TOKENS,
+    STM_POST_COMPRESSION_TARGET_TOKENS,
     STM_SUMMARY_TARGET_TOKENS,
     STM_TOKEN_THRESHOLD,
 )
@@ -279,10 +280,8 @@ def stm_compression_node(
             recent_messages: List[BaseMessage]
             token_budget_usable = token_encoder is not None
             if token_budget_usable:
-                recent_budget = min(
-                    max(0, STM_RECENT_TARGET_TOKENS),
-                    max(0, STM_TOKEN_THRESHOLD - STM_SUMMARY_TARGET_TOKENS),
-                )
+                effective_target = min(STM_TOKEN_THRESHOLD, STM_POST_COMPRESSION_TARGET_TOKENS)
+                recent_budget = max(0, effective_target - STM_SUMMARY_TARGET_TOKENS)
                 if recent_budget > 0:
                     recent_messages = _select_recent_messages_by_token_budget(
                         messages,
@@ -323,11 +322,19 @@ def stm_compression_node(
                 )
                 try:
                     summary_response = compression_chain.invoke(
-                        {"conversation_to_compress": conversation_text},
+                        {
+                            "conversation_to_compress": conversation_text,
+                            "summary_token_budget": STM_SUMMARY_TARGET_TOKENS,
+                        },
                         config=compression_config,
                     )
                 except TypeError:
-                    summary_response = compression_chain.invoke({"conversation_to_compress": conversation_text})
+                    summary_response = compression_chain.invoke(
+                        {
+                            "conversation_to_compress": conversation_text,
+                            "summary_token_budget": STM_SUMMARY_TARGET_TOKENS,
+                        }
+                    )
                 summary_text = _normalize_summary_text(summary_response)
                 summary_text = _trim_text_to_token_budget(
                     summary_text,

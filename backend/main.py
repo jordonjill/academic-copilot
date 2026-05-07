@@ -46,11 +46,11 @@ def _chat_max_workers() -> int:
 
 
 def _ltm_drain_timeout_seconds() -> float:
-    raw = os.getenv("LTM_DRAIN_TIMEOUT_SECONDS", "5").strip()
+    raw = os.getenv("LTM_DRAIN_TIMEOUT_SECONDS", "8").strip()
     try:
         value = float(raw)
     except ValueError:
-        value = 5.0
+        value = 8.0
     return max(0.1, value)
 
 

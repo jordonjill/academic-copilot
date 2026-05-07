@@ -80,10 +80,14 @@ def render_react_messages(
     agent_id: str,
     node_name: str,
     runtime_mode: str,
+    context_facility: ContextFacility | None = None,
 ) -> list[BaseMessage]:
     task_input = task_input_from_state(state)
     if task_input is None:
-        return list(state["context"].get("messages", []))
+        messages = list(state["context"].get("messages", []))
+        if context_facility is None:
+            return messages
+        return context_facility.select_recent_messages(messages, scope="react")
     return [
         HumanMessage(
             content=build_task_input_envelope(

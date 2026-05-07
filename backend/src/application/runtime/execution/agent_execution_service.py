@@ -287,6 +287,7 @@ class AgentExecutionService:
             agent_id=agent_id,
             node_name=node_name,
             runtime_mode=str(state.get("runtime", {}).get("mode", spec.mode)),
+            context_facility=self._context_facility,
         )
         max_internal_steps = self.react_max_internal_steps_for_state(state, spec)
         raw = self.invoke_react_sync(
@@ -329,6 +330,7 @@ class AgentExecutionService:
             agent_id=agent_id,
             node_name=node_name,
             runtime_mode=str(state.get("runtime", {}).get("mode", spec.mode)),
+            context_facility=self._context_facility,
         )
         max_internal_steps = self.react_max_internal_steps_for_state(state, spec)
         raw = await self.invoke_react_async(

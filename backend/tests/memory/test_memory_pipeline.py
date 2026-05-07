@@ -159,7 +159,7 @@ def test_non_string_summary_recorded(monkeypatch, tmp_path):
 
 def test_recent_raw_context_preserved(monkeypatch, tmp_path):
     _prepare_db(tmp_path, monkeypatch)
-    monkeypatch.setattr(stm_module, "STM_TOKEN_THRESHOLD", 1)
+    monkeypatch.setattr(stm_module, "STM_TOKEN_THRESHOLD", 12)
     monkeypatch.setattr(stm_module, "STM_KEEP_RECENT", 4)
     messages = [
         HumanMessage(content="old"),
@@ -177,6 +177,33 @@ def test_recent_raw_context_preserved(monkeypatch, tmp_path):
         isinstance(m, SystemMessage) and m.content == "system note"
         for m in compressed
     )
+
+
+def test_post_compression_target_limits_recent_budget(monkeypatch, tmp_path):
+    class _FakeEncoder:
+        @staticmethod
+        def encode(text: str) -> list[str]:
+            return text.split()
+
+    _prepare_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(stm_module, "STM_TOKEN_THRESHOLD", 12)
+    monkeypatch.setattr(stm_module, "STM_POST_COMPRESSION_TARGET_TOKENS", 12)
+    monkeypatch.setattr(stm_module, "STM_SUMMARY_TARGET_TOKENS", 4)
+    monkeypatch.setattr(stm_module, "_try_get_token_encoder", lambda: _FakeEncoder())
+    messages = [
+        HumanMessage(content="one two three four five six"),
+        AIMessage(content="seven eight nine ten eleven twelve"),
+        HumanMessage(content="thirteen fourteen fifteen sixteen seventeen eighteen"),
+    ]
+    state = _base_state(messages)
+
+    result = stm_compression_node(state, FakeListChatModel(responses=["summary words here"]))
+
+    compressed = result["messages"]
+    assert result["stm_compressed"] is True
+    assert len(compressed) == 2
+    assert isinstance(compressed[0], SystemMessage)
+    assert compressed[-1].content == messages[-1].content
 
 
 def test_snapshot_round_trip_compatible(monkeypatch, tmp_path):

@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 import logging
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from src.application.runtime.execution.isolation_facility import IsolationFacility
 from src.application.runtime.execution.runtime_result_service import RuntimeResultService
 from src.application.runtime.execution.task_payload import render_chain_payload, render_react_messages
-from src.application.runtime.providers.context_facility import ContextFacility
+from src.application.runtime.providers.context_facility import ContextFacility, ContextPolicy
 
 
 def _parent_state() -> dict:
@@ -124,6 +124,46 @@ def test_chain_and_react_payloads_share_the_same_task_input_semantics() -> None:
     assert react_payload["protocol"] == "task_input_v1"
     assert react_payload["agent_id"] == "reader_extractor"
     assert react_payload["node_name"] == "read"
+
+
+def test_render_react_messages_applies_context_facility_cap_without_task_input() -> None:
+    class _FakeEncoder:
+        @staticmethod
+        def encode(text: str) -> list[str]:
+            return text.split()
+
+    facility = ContextFacility(
+        policy=ContextPolicy(
+            default_messages_window=4,
+            supervisor_messages_window=4,
+            trace_recent_window=2,
+            trace_max_items=6,
+            text_preview_chars=120,
+            trace_output_preview_chars=120,
+            trace_reason_chars=120,
+            trace_instruction_chars=120,
+            react_messages_token_cap=40,
+        )
+    )
+    facility._token_encoder = _FakeEncoder()
+    state = _parent_state()
+    state["task"] = {}
+    state["context"]["messages"] = [
+        HumanMessage(content="alpha " * 20),
+        AIMessage(content="beta " * 20),
+        HumanMessage(content="gamma " * 20),
+    ]
+
+    react_messages = render_react_messages(
+        state,
+        agent_id="reader_extractor",
+        node_name="read",
+        runtime_mode="subagent",
+        context_facility=facility,
+    )
+
+    assert len(react_messages) == 1
+    assert str(react_messages[0].content) == state["context"]["messages"][-1].content
 
 
 def test_subagent_result_merges_only_artifact_patch_and_execution_record_to_parent() -> None:

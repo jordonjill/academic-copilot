@@ -94,3 +94,35 @@ def test_compact_artifacts_excludes_internal_keys():
     assert "shared" not in compact["keys"]
     assert "execution_trace" not in compact["keys"]
     assert "shared_summary" not in compact
+
+
+def test_select_recent_messages_uses_react_token_cap():
+    class _FakeEncoder:
+        @staticmethod
+        def encode(text: str) -> list[str]:
+            return text.split()
+
+    facility = ContextFacility(
+        policy=ContextPolicy(
+            default_messages_window=4,
+            supervisor_messages_window=4,
+            trace_recent_window=2,
+            trace_max_items=6,
+            text_preview_chars=120,
+            trace_output_preview_chars=120,
+            trace_reason_chars=120,
+            trace_instruction_chars=120,
+            react_messages_token_cap=40,
+        )
+    )
+    facility._token_encoder = _FakeEncoder()
+    messages = [
+        HumanMessage(content="alpha " * 20),
+        AIMessage(content="beta " * 20),
+        HumanMessage(content="gamma " * 20),
+    ]
+
+    selected = facility.select_recent_messages(messages, scope="react")
+
+    assert len(selected) == 1
+    assert selected[0].content == messages[-1].content
